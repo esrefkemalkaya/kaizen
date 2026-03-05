@@ -1,5 +1,4 @@
 import sqlite3
-import os
 from pathlib import Path
 
 DB_PATH = Path.home() / ".kaizen_drilling" / "kaizen.db"
@@ -41,7 +40,11 @@ def init_db():
             year           INTEGER NOT NULL,
             hole_id        TEXT NOT NULL,
             meters_drilled REAL NOT NULL DEFAULT 0,
-            standby_hours  REAL NOT NULL DEFAULT 0
+            standby_hours  REAL NOT NULL DEFAULT 0,
+            start_date     TEXT NOT NULL DEFAULT '',
+            end_date       TEXT NOT NULL DEFAULT '',
+            start_depth    REAL NOT NULL DEFAULT 0,
+            end_depth      REAL NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS ppe_charges (
@@ -63,7 +66,59 @@ def init_db():
             quantity      REAL NOT NULL DEFAULT 0,
             unit_price    REAL NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS standby_entries (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+            month         INTEGER NOT NULL,
+            year          INTEGER NOT NULL,
+            entry_date    TEXT NOT NULL DEFAULT '',
+            hole_id       TEXT NOT NULL DEFAULT '',
+            start_time    TEXT NOT NULL DEFAULT '',
+            end_time      TEXT NOT NULL DEFAULT '',
+            standby_type  TEXT NOT NULL DEFAULT '',
+            description   TEXT NOT NULL DEFAULT '',
+            hours         REAL NOT NULL DEFAULT 0,
+            rig_name      TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        );
     """)
 
     conn.commit()
+    _migrate_db(conn)
     conn.close()
+
+
+def _migrate_db(conn):
+    """Add any missing columns to existing databases."""
+    c = conn.cursor()
+
+    # drilling_entries new columns
+    existing = {r[1] for r in c.execute("PRAGMA table_info(drilling_entries)").fetchall()}
+    for col, defn in [
+        ("start_date",  "TEXT NOT NULL DEFAULT ''"),
+        ("end_date",    "TEXT NOT NULL DEFAULT ''"),
+        ("start_depth", "REAL NOT NULL DEFAULT 0"),
+        ("end_depth",   "REAL NOT NULL DEFAULT 0"),
+    ]:
+        if col not in existing:
+            c.execute(f"ALTER TABLE drilling_entries ADD COLUMN {col} {defn}")
+
+    # standby_entries new columns
+    existing = {r[1] for r in c.execute("PRAGMA table_info(standby_entries)").fetchall()}
+    for col, defn in [
+        ("entry_date",   "TEXT NOT NULL DEFAULT ''"),
+        ("hole_id",      "TEXT NOT NULL DEFAULT ''"),
+        ("start_time",   "TEXT NOT NULL DEFAULT ''"),
+        ("end_time",     "TEXT NOT NULL DEFAULT ''"),
+        ("standby_type", "TEXT NOT NULL DEFAULT ''"),
+        ("rig_name",     "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        if col not in existing:
+            c.execute(f"ALTER TABLE standby_entries ADD COLUMN {col} {defn}")
+
+    conn.commit()

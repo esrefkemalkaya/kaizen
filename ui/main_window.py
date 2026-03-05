@@ -55,7 +55,7 @@ DIVIDER_STYLE = "background-color: #37474f;"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kaizen — Drilling Invoice Manager")
+        self.setWindowTitle("Drill Invoice")
         self.setMinimumSize(1100, 700)
         self._nav_buttons = []
         self._build_ui()
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         sb_layout.setContentsMargins(0, 0, 0, 0)
         sb_layout.setSpacing(0)
 
-        title = QLabel("⛏  Kaizen")
+        title = QLabel("⛏  Drill Invoice")
         title.setStyleSheet(HEADER_STYLE)
         sb_layout.addWidget(title)
 
