@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QLabel, QComboBox, QMessageBox, QAbstractItemView
+    QLabel, QComboBox, QMessageBox, QAbstractItemView,
+    QFileDialog, QLineEdit, QStyledItemDelegate, QCompleter
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
@@ -14,6 +15,31 @@ MONTHS = ["January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"]
 
 
+class HoleIdDelegate(QStyledItemDelegate):
+    """Delegate for col 0 that shows a QLineEdit with autocomplete."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hole_ids: list[str] = []
+
+    def set_completions(self, hole_ids: list[str]):
+        self._hole_ids = hole_ids
+
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        completer = QCompleter(self._hole_ids, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        editor.setCompleter(completer)
+        return editor
+
+    def setEditorData(self, editor, index):
+        editor.setText(index.data() or "")
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.text(), Qt.ItemDataRole.EditRole)
+
+
 class DrillingEntryView(QWidget):
     def __init__(self):
         super().__init__()
@@ -21,6 +47,7 @@ class DrillingEntryView(QWidget):
         self._project_name = ""
         self._contractor_id = None
         self._row_ids: list[int | None] = []   # DB id per table row
+        self._hole_id_delegate = HoleIdDelegate()
         self._build_ui()
 
     def _build_ui(self):
@@ -85,9 +112,14 @@ class DrillingEntryView(QWidget):
         self.save_btn.setStyleSheet(BTN_SUCCESS)
         self.save_btn.clicked.connect(self._save_all)
 
+        self.import_btn = QPushButton("Import from Excel")
+        self.import_btn.setStyleSheet(BTN_PRIMARY)
+        self.import_btn.clicked.connect(self._import_excel)
+
         action_bar.addWidget(self.add_row_btn)
         action_bar.addWidget(self.del_row_btn)
         action_bar.addWidget(self.save_btn)
+        action_bar.addWidget(self.import_btn)
         action_bar.addStretch()
         layout.addLayout(action_bar)
 
@@ -104,6 +136,7 @@ class DrillingEntryView(QWidget):
             self.table.setColumnWidth(col, 130)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.setItemDelegateForColumn(0, self._hole_id_delegate)
         self.table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.table)
 
@@ -154,6 +187,12 @@ class DrillingEntryView(QWidget):
                 return c["rate_per_meter"], c["standby_hour_rate"]
         return 0.0, 0.0
 
+    def _refresh_completions(self):
+        cid = self.contractor_combo.currentData()
+        if cid:
+            hole_ids = m.get_all_hole_ids(cid)
+            self._hole_id_delegate.set_completions(hole_ids)
+
     def _load_entries(self):
         cid = self.contractor_combo.currentData()
         month = self.month_combo.currentData()
@@ -161,6 +200,7 @@ class DrillingEntryView(QWidget):
         if not cid or not month or not year:
             return
         self._contractor_id = cid
+        self._refresh_completions()
         entries = m.get_drilling_entries(cid, month, year)
         self._row_ids = []
         self.table.blockSignals(True)
@@ -250,6 +290,79 @@ class DrillingEntryView(QWidget):
             QMessageBox.information(self, "Saved", "All entries saved successfully.")
 
         self._load_entries()
+
+    def _import_excel(self):
+        if not self._contractor_id:
+            QMessageBox.information(self, "Select", "Select a contractor first.")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Excel File", "", "Excel Files (*.xlsx *.xls)"
+        )
+        if not path:
+            return
+
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, data_only=True)
+            ws = wb.active
+
+            # Find header row — look for Hole ID, Meters, Standby columns
+            header_row = None
+            col_hole = col_meters = col_standby = None
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value and isinstance(cell.value, str):
+                        val = cell.value.strip().lower()
+                        if "hole" in val:
+                            col_hole = cell.column
+                            header_row = cell.row
+                        elif "meter" in val:
+                            col_meters = cell.column
+                        elif "standby" in val:
+                            col_standby = cell.column
+                if header_row:
+                    break
+
+            if not header_row or not col_hole or not col_meters:
+                QMessageBox.warning(
+                    self, "Import Error",
+                    "Could not find required columns.\n"
+                    "The file must have columns containing 'Hole', 'Meter', and optionally 'Standby'."
+                )
+                return
+
+            rate_m, rate_s = self._get_rate()
+            imported = 0
+            self.table.blockSignals(True)
+            for row in ws.iter_rows(min_row=header_row + 1):
+                hole_id = row[col_hole - 1].value
+                meters_val = row[col_meters - 1].value
+                standby_val = row[col_standby - 1].value if col_standby else 0
+
+                if hole_id is None and meters_val is None:
+                    continue  # skip blank rows
+
+                hole_id = str(hole_id).strip() if hole_id is not None else ""
+                try:
+                    meters = float(meters_val) if meters_val is not None else 0.0
+                    standby = float(standby_val) if standby_val is not None else 0.0
+                except (ValueError, TypeError):
+                    continue
+
+                self._append_row(None, hole_id, meters, standby, rate_m, rate_s)
+                imported += 1
+
+            self.table.blockSignals(False)
+            self._update_totals()
+
+            QMessageBox.information(
+                self, "Import Complete",
+                f"Imported {imported} rows. Review the data and click Save All to keep it."
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed", str(e))
 
     def _on_item_changed(self, item):
         row = item.row()
