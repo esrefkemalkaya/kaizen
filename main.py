@@ -10,7 +10,7 @@ def main():
     init_db()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Kaizen Drilling Invoice Manager")
+    app.setApplicationName("Drill Invoice")
     app.setFont(QFont("Segoe UI", 10))
 
     window = MainWindow()

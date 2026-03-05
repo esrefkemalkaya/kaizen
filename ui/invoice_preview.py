@@ -157,10 +157,11 @@ class InvoicePreviewView(QWidget):
             rate_m = contractor["rate_per_meter"]
             rate_s = contractor["standby_hour_rate"]
 
-            entries = m.get_drilling_entries(cid, month, year)
-            drill_total = sum(
-                e["meters_drilled"] * rate_m + e["standby_hours"] * rate_s
-                for e in entries
+            entries  = m.get_drilling_entries(cid, month, year)
+            standby  = m.get_standby_entries(cid, month, year)
+            drill_total = (
+                sum(e["meters_drilled"] * rate_m for e in entries) +
+                sum(e["hours"] * rate_s for e in standby)
             )
 
             if ctype == "underground":

@@ -76,19 +76,19 @@ def get_drilling_entries(contractor_id: int, month: int, year: int):
 
 
 def upsert_drilling_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
-                          hole_id: str, meters: float, standby: float) -> int:
+                          hole_id: str, meters: float) -> int:
     with get_connection() as conn:
         if entry_id:
             conn.execute(
-                "UPDATE drilling_entries SET hole_id=?, meters_drilled=?, standby_hours=? WHERE id=?",
-                (hole_id, meters, standby, entry_id)
+                "UPDATE drilling_entries SET hole_id=?, meters_drilled=? WHERE id=?",
+                (hole_id, meters, entry_id)
             )
             conn.commit()
             return entry_id
         else:
             cur = conn.execute(
-                "INSERT INTO drilling_entries (contractor_id, month, year, hole_id, meters_drilled, standby_hours) VALUES (?,?,?,?,?,?)",
-                (contractor_id, month, year, hole_id, meters, standby)
+                "INSERT INTO drilling_entries (contractor_id, month, year, hole_id, meters_drilled, standby_hours) VALUES (?,?,?,?,?,0)",
+                (contractor_id, month, year, hole_id, meters)
             )
             conn.commit()
             return cur.lastrowid
@@ -107,6 +107,50 @@ def get_all_hole_ids(contractor_id: int) -> list[str]:
             (contractor_id,)
         ).fetchall()
         return [r["hole_id"] for r in rows]
+
+
+# ── Standby Entries ───────────────────────────────────────────────────────────
+
+def get_standby_entries(contractor_id: int, month: int, year: int):
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM standby_entries WHERE contractor_id=? AND month=? AND year=? ORDER BY rig_name, id",
+            (contractor_id, month, year)
+        ).fetchall()
+
+
+def upsert_standby_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
+                         rig_name: str, description: str, hours: float) -> int:
+    with get_connection() as conn:
+        if entry_id:
+            conn.execute(
+                "UPDATE standby_entries SET rig_name=?, description=?, hours=? WHERE id=?",
+                (rig_name, description, hours, entry_id)
+            )
+            conn.commit()
+            return entry_id
+        else:
+            cur = conn.execute(
+                "INSERT INTO standby_entries (contractor_id, month, year, rig_name, description, hours) VALUES (?,?,?,?,?,?)",
+                (contractor_id, month, year, rig_name, description, hours)
+            )
+            conn.commit()
+            return cur.lastrowid
+
+
+def delete_standby_entry(entry_id: int):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM standby_entries WHERE id=?", (entry_id,))
+        conn.commit()
+
+
+def get_all_rig_names(contractor_id: int) -> list[str]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT rig_name FROM standby_entries WHERE contractor_id=? ORDER BY rig_name",
+            (contractor_id,)
+        ).fetchall()
+        return [r["rig_name"] for r in rows]
 
 
 # ── PPE Charges ───────────────────────────────────────────────────────────────

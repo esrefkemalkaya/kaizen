@@ -63,6 +63,16 @@ def init_db():
             quantity      REAL NOT NULL DEFAULT 0,
             unit_price    REAL NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS standby_entries (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+            month         INTEGER NOT NULL,
+            year          INTEGER NOT NULL,
+            rig_name      TEXT NOT NULL DEFAULT '',
+            description   TEXT NOT NULL DEFAULT '',
+            hours         REAL NOT NULL DEFAULT 0
+        );
     """)
 
     conn.commit()
