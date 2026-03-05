@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
+from datetime import datetime, timedelta
 
 import db.models as m
 from .styles import (PAGE_TITLE_STYLE, TABLE_STYLE, BTN_PRIMARY,
@@ -14,11 +15,31 @@ from .styles import (PAGE_TITLE_STYLE, TABLE_STYLE, BTN_PRIMARY,
 MONTHS = ["January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"]
 
+STANDBY_TYPES = [
+    "Patlatma", "Elektrik arızası", "Su kesintisi",
+    "Topograf beklendi", "Servis ekibi beklendi", "Hava koşulları",
+    "Bakım", "Diğer",
+]
+
+
+def _calc_hours(start: str, end: str) -> float:
+    for fmt in ["%H:%M", "%H.%M", "%H:%M:%S"]:
+        try:
+            s = datetime.strptime(start.strip(), fmt)
+            e = datetime.strptime(end.strip(), fmt)
+            diff = e - s
+            if diff.total_seconds() < 0:
+                diff += timedelta(days=1)
+            return round(diff.total_seconds() / 3600, 2)
+        except ValueError:
+            continue
+    return 0.0
+
 
 class AutoCompleteDelegate(QStyledItemDelegate):
-    def __init__(self, parent=None):
+    def __init__(self, items: list[str] | None = None, parent=None):
         super().__init__(parent)
-        self._items: list[str] = []
+        self._items: list[str] = items or []
 
     def set_completions(self, items: list[str]):
         self._items = items
@@ -47,7 +68,8 @@ class DrillingEntryView(QWidget):
         self._borehole_ids: list[int | None] = []
         self._standby_ids: list[int | None] = []
         self._hole_delegate = AutoCompleteDelegate()
-        self._rig_delegate = AutoCompleteDelegate()
+        self._sb_hole_delegate = AutoCompleteDelegate()
+        self._type_delegate = AutoCompleteDelegate(STANDBY_TYPES)
         self._build_ui()
 
     def _build_ui(self):
@@ -129,13 +151,17 @@ class DrillingEntryView(QWidget):
         bh_action.addStretch()
         bh_layout.addLayout(bh_action)
 
+        # Cols: Hole ID | Start Date | End Date | Start Depth | End Depth | Meters | Amount
         self.bh_table = QTableWidget()
         self.bh_table.setStyleSheet(TABLE_STYLE)
-        self.bh_table.setColumnCount(3)
-        self.bh_table.setHorizontalHeaderLabels(["Hole ID", "Meters Drilled", "Meter Amount"])
+        self.bh_table.setColumnCount(7)
+        self.bh_table.setHorizontalHeaderLabels([
+            "Hole ID", "Start Date", "End Date",
+            "Start Depth (m)", "End Depth (m)", "Meters", "Amount"
+        ])
         self.bh_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.bh_table.setColumnWidth(1, 150)
-        self.bh_table.setColumnWidth(2, 150)
+        for col, w in [(1, 100), (2, 100), (3, 110), (4, 110), (5, 90), (6, 120)]:
+            self.bh_table.setColumnWidth(col, w)
         self.bh_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.bh_table.verticalHeader().setVisible(False)
         self.bh_table.setItemDelegateForColumn(0, self._hole_delegate)
@@ -178,20 +204,26 @@ class DrillingEntryView(QWidget):
         sb_action.addStretch()
         sb_layout.addLayout(sb_action)
 
+        # Cols: Date | Hole ID | Start | End | Type | Detail | Hours | Amount
         self.sb_table = QTableWidget()
         self.sb_table.setStyleSheet(TABLE_STYLE)
-        self.sb_table.setColumnCount(4)
-        self.sb_table.setHorizontalHeaderLabels(
-            ["Rig Name", "Description / Reason", "Hours", "Amount"]
-        )
-        self.sb_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.sb_table.setColumnWidth(0, 160)
-        self.sb_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.sb_table.setColumnWidth(2, 100)
-        self.sb_table.setColumnWidth(3, 130)
+        self.sb_table.setColumnCount(8)
+        self.sb_table.setHorizontalHeaderLabels([
+            "Date", "Hole ID", "Start", "End",
+            "Type", "Detail / Reason", "Hours", "Amount"
+        ])
+        self.sb_table.setColumnWidth(0, 90)
+        self.sb_table.setColumnWidth(1, 130)
+        self.sb_table.setColumnWidth(2, 65)
+        self.sb_table.setColumnWidth(3, 65)
+        self.sb_table.setColumnWidth(4, 140)
+        self.sb_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.sb_table.setColumnWidth(6, 65)
+        self.sb_table.setColumnWidth(7, 110)
         self.sb_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.sb_table.verticalHeader().setVisible(False)
-        self.sb_table.setItemDelegateForColumn(0, self._rig_delegate)
+        self.sb_table.setItemDelegateForColumn(1, self._sb_hole_delegate)
+        self.sb_table.setItemDelegateForColumn(4, self._type_delegate)
         self.sb_table.itemChanged.connect(self._sb_on_item_changed)
         sb_layout.addWidget(self.sb_table)
 
@@ -205,7 +237,7 @@ class DrillingEntryView(QWidget):
         sb_layout.addLayout(sb_footer)
 
         splitter.addWidget(sb_widget)
-        splitter.setSizes([380, 260])
+        splitter.setSizes([380, 280])
         layout.addWidget(splitter)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -243,8 +275,10 @@ class DrillingEntryView(QWidget):
     def _refresh_completions(self):
         cid = self.contractor_combo.currentData()
         if cid:
-            self._hole_delegate.set_completions(m.get_all_hole_ids(cid))
-            self._rig_delegate.set_completions(m.get_all_rig_names(cid))
+            hole_ids = m.get_all_hole_ids(cid)
+            self._hole_delegate.set_completions(hole_ids)
+            all_holes = m.get_all_hole_ids_for_standby(cid)
+            self._sb_hole_delegate.set_completions(all_holes)
 
     def _load_all(self):
         self._load_boreholes()
@@ -266,20 +300,32 @@ class DrillingEntryView(QWidget):
         self.bh_table.blockSignals(True)
         self.bh_table.setRowCount(0)
         for e in entries:
-            self._bh_append_row(e["id"], e["hole_id"], e["meters_drilled"], rate_m)
+            self._bh_append_row(
+                e["id"], e["hole_id"],
+                e.get("start_date", ""), e.get("end_date", ""),
+                e.get("start_depth", 0.0), e.get("end_depth", 0.0),
+                e["meters_drilled"], rate_m
+            )
         self.bh_table.blockSignals(False)
         self._bh_update_totals()
 
-    def _bh_append_row(self, db_id, hole_id, meters, rate_m):
+    def _bh_append_row(self, db_id, hole_id, start_date, end_date,
+                       start_depth, end_depth, meters, rate_m):
         row = self.bh_table.rowCount()
         self.bh_table.insertRow(row)
         self._borehole_ids.append(db_id)
+
         self.bh_table.setItem(row, 0, QTableWidgetItem(str(hole_id)))
-        self.bh_table.setItem(row, 1, QTableWidgetItem(f"{meters:.2f}"))
+        self.bh_table.setItem(row, 1, QTableWidgetItem(str(start_date)))
+        self.bh_table.setItem(row, 2, QTableWidgetItem(str(end_date)))
+        self.bh_table.setItem(row, 3, QTableWidgetItem(f"{start_depth:.2f}"))
+        self.bh_table.setItem(row, 4, QTableWidgetItem(f"{end_depth:.2f}"))
+        self.bh_table.setItem(row, 5, QTableWidgetItem(f"{meters:.2f}"))
+
         amt_item = QTableWidgetItem(f"${meters * rate_m:,.2f}")
         amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt_item.setForeground(QColor("#1b5e20"))
-        self.bh_table.setItem(row, 2, amt_item)
+        self.bh_table.setItem(row, 6, amt_item)
 
     def _bh_add_row(self):
         if not self._contractor_id:
@@ -287,7 +333,7 @@ class DrillingEntryView(QWidget):
             return
         rate_m, _ = self._get_rate()
         self.bh_table.blockSignals(True)
-        self._bh_append_row(None, "", 0, rate_m)
+        self._bh_append_row(None, "", "", "", 0, 0, 0, rate_m)
         self.bh_table.blockSignals(False)
 
     def _bh_delete_row(self):
@@ -320,13 +366,20 @@ class DrillingEntryView(QWidget):
             if not hole_id:
                 errors.append(f"Row {row + 1}: Hole ID is empty.")
                 continue
+            start_date = (self.bh_table.item(row, 1) or QTableWidgetItem("")).text().strip()
+            end_date   = (self.bh_table.item(row, 2) or QTableWidgetItem("")).text().strip()
             try:
-                meters = float((self.bh_table.item(row, 1) or QTableWidgetItem("0")).text())
+                start_depth = float((self.bh_table.item(row, 3) or QTableWidgetItem("0")).text())
+                end_depth   = float((self.bh_table.item(row, 4) or QTableWidgetItem("0")).text())
+                meters      = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
             except ValueError:
-                errors.append(f"Row {row + 1}: Invalid meters value.")
+                errors.append(f"Row {row + 1}: Invalid numeric value.")
                 continue
             db_id = self._borehole_ids[row]
-            new_id = m.upsert_drilling_entry(db_id, cid, month, year, hole_id, meters)
+            new_id = m.upsert_drilling_entry(
+                db_id, cid, month, year,
+                hole_id, start_date, end_date, start_depth, end_depth, meters
+            )
             self._borehole_ids[row] = new_id
         if errors:
             QMessageBox.warning(self, "Validation Errors", "\n".join(errors))
@@ -335,28 +388,45 @@ class DrillingEntryView(QWidget):
         self._load_boreholes()
 
     def _bh_on_item_changed(self, item):
-        if item.column() != 1:
-            return
         row = item.row()
+        col = item.column()
+        if col in (3, 4):
+            # depth changed → auto-calc meters
+            try:
+                s = float((self.bh_table.item(row, 3) or QTableWidgetItem("0")).text())
+                e = float((self.bh_table.item(row, 4) or QTableWidgetItem("0")).text())
+                meters = max(0.0, e - s)
+            except ValueError:
+                return
+            self.bh_table.blockSignals(True)
+            self.bh_table.setItem(row, 5, QTableWidgetItem(f"{meters:.2f}"))
+            self._bh_set_amount(row, meters)
+            self.bh_table.blockSignals(False)
+            self._bh_update_totals()
+        elif col == 5:
+            # meters manually edited → update amount
+            try:
+                meters = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
+            except ValueError:
+                return
+            self.bh_table.blockSignals(True)
+            self._bh_set_amount(row, meters)
+            self.bh_table.blockSignals(False)
+            self._bh_update_totals()
+
+    def _bh_set_amount(self, row, meters):
         rate_m, _ = self._get_rate()
-        try:
-            meters = float((self.bh_table.item(row, 1) or QTableWidgetItem("0")).text())
-        except ValueError:
-            return
-        self.bh_table.blockSignals(True)
         amt = QTableWidgetItem(f"${meters * rate_m:,.2f}")
         amt.setFlags(amt.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt.setForeground(QColor("#1b5e20"))
-        self.bh_table.setItem(row, 2, amt)
-        self.bh_table.blockSignals(False)
-        self._bh_update_totals()
+        self.bh_table.setItem(row, 6, amt)
 
     def _bh_update_totals(self):
         rate_m, _ = self._get_rate()
         total_m = total_amt = 0.0
         for row in range(self.bh_table.rowCount()):
             try:
-                meters = float((self.bh_table.item(row, 1) or QTableWidgetItem("0")).text())
+                meters = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
             except ValueError:
                 continue
             total_m += meters
@@ -382,19 +452,16 @@ class DrillingEntryView(QWidget):
                 for cell in row:
                     if cell.value and isinstance(cell.value, str):
                         val = cell.value.strip().lower()
-                        if "hole" in val:
+                        if "hole" in val or "kuyu" in val:
                             col_hole = cell.column
                             header_row = cell.row
-                        elif "meter" in val:
+                        elif "meter" in val or "metre" in val:
                             col_meters = cell.column
                 if header_row:
                     break
             if not header_row or not col_hole or not col_meters:
-                QMessageBox.warning(
-                    self, "Import Error",
-                    "Could not find required columns.\n"
-                    "The file must have columns containing 'Hole' and 'Meter'."
-                )
+                QMessageBox.warning(self, "Import Error",
+                    "Could not find required columns (Hole/Kuyu and Meter/Metre).")
                 return
             rate_m, _ = self._get_rate()
             imported = 0
@@ -409,14 +476,12 @@ class DrillingEntryView(QWidget):
                     meters = float(meters_val) if meters_val is not None else 0.0
                 except (ValueError, TypeError):
                     continue
-                self._bh_append_row(None, hole_id, meters, rate_m)
+                self._bh_append_row(None, hole_id, "", "", 0, 0, meters, rate_m)
                 imported += 1
             self.bh_table.blockSignals(False)
             self._bh_update_totals()
-            QMessageBox.information(
-                self, "Import Complete",
-                f"Imported {imported} rows. Click Save Boreholes to keep them."
-            )
+            QMessageBox.information(self, "Import Complete",
+                f"Imported {imported} rows. Click Save Boreholes to keep them.")
         except Exception as e:
             QMessageBox.critical(self, "Import Failed", str(e))
 
@@ -434,21 +499,41 @@ class DrillingEntryView(QWidget):
         self.sb_table.blockSignals(True)
         self.sb_table.setRowCount(0)
         for e in entries:
-            self._sb_append_row(e["id"], e["rig_name"], e["description"], e["hours"], rate_s)
+            self._sb_append_row(
+                e["id"],
+                e.get("entry_date", ""),
+                e.get("hole_id", ""),
+                e.get("start_time", ""),
+                e.get("end_time", ""),
+                e.get("standby_type", ""),
+                e["description"],
+                e["hours"],
+                rate_s
+            )
         self.sb_table.blockSignals(False)
         self._sb_update_totals()
 
-    def _sb_append_row(self, db_id, rig_name, description, hours, rate_s):
+    def _sb_append_row(self, db_id, entry_date, hole_id, start_time,
+                       end_time, standby_type, description, hours, rate_s):
         row = self.sb_table.rowCount()
         self.sb_table.insertRow(row)
         self._standby_ids.append(db_id)
-        self.sb_table.setItem(row, 0, QTableWidgetItem(str(rig_name)))
-        self.sb_table.setItem(row, 1, QTableWidgetItem(str(description)))
-        self.sb_table.setItem(row, 2, QTableWidgetItem(f"{hours:.2f}"))
+
+        self.sb_table.setItem(row, 0, QTableWidgetItem(str(entry_date)))
+        self.sb_table.setItem(row, 1, QTableWidgetItem(str(hole_id)))
+        self.sb_table.setItem(row, 2, QTableWidgetItem(str(start_time)))
+        self.sb_table.setItem(row, 3, QTableWidgetItem(str(end_time)))
+        self.sb_table.setItem(row, 4, QTableWidgetItem(str(standby_type)))
+        self.sb_table.setItem(row, 5, QTableWidgetItem(str(description)))
+
+        hrs_item = QTableWidgetItem(f"{hours:.2f}")
+        hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.sb_table.setItem(row, 6, hrs_item)
+
         amt_item = QTableWidgetItem(f"${hours * rate_s:,.2f}")
         amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt_item.setForeground(QColor("#e65100"))
-        self.sb_table.setItem(row, 3, amt_item)
+        self.sb_table.setItem(row, 7, amt_item)
 
     def _sb_add_row(self):
         if not self._contractor_id:
@@ -456,7 +541,7 @@ class DrillingEntryView(QWidget):
             return
         _, rate_s = self._get_rate()
         self.sb_table.blockSignals(True)
-        self._sb_append_row(None, "", "", 0, rate_s)
+        self._sb_append_row(None, "", "", "", "", "", "", 0, rate_s)
         self.sb_table.blockSignals(False)
 
     def _sb_delete_row(self):
@@ -485,19 +570,27 @@ class DrillingEntryView(QWidget):
             return
         errors = []
         for row in range(self.sb_table.rowCount()):
-            rig = (self.sb_table.item(row, 0) or QTableWidgetItem("")).text().strip()
-            if not rig:
-                errors.append(f"Row {row + 1}: Rig Name is empty.")
+            entry_date   = (self.sb_table.item(row, 0) or QTableWidgetItem("")).text().strip()
+            hole_id      = (self.sb_table.item(row, 1) or QTableWidgetItem("")).text().strip()
+            start_time   = (self.sb_table.item(row, 2) or QTableWidgetItem("")).text().strip()
+            end_time     = (self.sb_table.item(row, 3) or QTableWidgetItem("")).text().strip()
+            standby_type = (self.sb_table.item(row, 4) or QTableWidgetItem("")).text().strip()
+            description  = (self.sb_table.item(row, 5) or QTableWidgetItem("")).text().strip()
+
+            if not start_time and not end_time and not description:
+                errors.append(f"Row {row + 1}: Start/End time or description required.")
                 continue
-            desc = (self.sb_table.item(row, 1) or QTableWidgetItem("")).text().strip()
-            try:
-                hours = float((self.sb_table.item(row, 2) or QTableWidgetItem("0")).text())
-            except ValueError:
-                errors.append(f"Row {row + 1}: Invalid hours value.")
-                continue
+
+            hours = _calc_hours(start_time, end_time) if start_time and end_time else 0.0
+
             db_id = self._standby_ids[row]
-            new_id = m.upsert_standby_entry(db_id, cid, month, year, rig, desc, hours)
+            new_id = m.upsert_standby_entry(
+                db_id, cid, month, year,
+                entry_date, hole_id, start_time, end_time,
+                standby_type, description, hours
+            )
             self._standby_ids[row] = new_id
+
         if errors:
             QMessageBox.warning(self, "Validation Errors", "\n".join(errors))
         else:
@@ -505,19 +598,24 @@ class DrillingEntryView(QWidget):
         self._load_standby()
 
     def _sb_on_item_changed(self, item):
-        if item.column() != 2:
-            return
         row = item.row()
-        _, rate_s = self._get_rate()
-        try:
-            hours = float((self.sb_table.item(row, 2) or QTableWidgetItem("0")).text())
-        except ValueError:
+        col = item.column()
+        if col not in (2, 3):
             return
+        start = (self.sb_table.item(row, 2) or QTableWidgetItem("")).text().strip()
+        end   = (self.sb_table.item(row, 3) or QTableWidgetItem("")).text().strip()
+        hours = _calc_hours(start, end) if start and end else 0.0
+        _, rate_s = self._get_rate()
+
         self.sb_table.blockSignals(True)
+        hrs_item = QTableWidgetItem(f"{hours:.2f}")
+        hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.sb_table.setItem(row, 6, hrs_item)
+
         amt = QTableWidgetItem(f"${hours * rate_s:,.2f}")
         amt.setFlags(amt.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt.setForeground(QColor("#e65100"))
-        self.sb_table.setItem(row, 3, amt)
+        self.sb_table.setItem(row, 7, amt)
         self.sb_table.blockSignals(False)
         self._sb_update_totals()
 
@@ -526,7 +624,7 @@ class DrillingEntryView(QWidget):
         total_h = total_amt = 0.0
         for row in range(self.sb_table.rowCount()):
             try:
-                hours = float((self.sb_table.item(row, 2) or QTableWidgetItem("0")).text())
+                hours = float((self.sb_table.item(row, 6) or QTableWidgetItem("0")).text())
             except ValueError:
                 continue
             total_h += hours

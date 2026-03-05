@@ -1,7 +1,7 @@
 from .database import get_connection
 
 
-# ── Projects ─────────────────────────────────────────────────────────────────
+# ── Projects ──────────────────────────────────────────────────────────────────
 
 def get_projects():
     with get_connection() as conn:
@@ -76,19 +76,25 @@ def get_drilling_entries(contractor_id: int, month: int, year: int):
 
 
 def upsert_drilling_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
-                          hole_id: str, meters: float) -> int:
+                          hole_id: str, start_date: str, end_date: str,
+                          start_depth: float, end_depth: float, meters: float) -> int:
     with get_connection() as conn:
         if entry_id:
             conn.execute(
-                "UPDATE drilling_entries SET hole_id=?, meters_drilled=? WHERE id=?",
-                (hole_id, meters, entry_id)
+                "UPDATE drilling_entries SET hole_id=?, start_date=?, end_date=?, "
+                "start_depth=?, end_depth=?, meters_drilled=? WHERE id=?",
+                (hole_id, start_date, end_date, start_depth, end_depth, meters, entry_id)
             )
             conn.commit()
             return entry_id
         else:
             cur = conn.execute(
-                "INSERT INTO drilling_entries (contractor_id, month, year, hole_id, meters_drilled, standby_hours) VALUES (?,?,?,?,?,0)",
-                (contractor_id, month, year, hole_id, meters)
+                "INSERT INTO drilling_entries "
+                "(contractor_id, month, year, hole_id, meters_drilled, standby_hours, "
+                "start_date, end_date, start_depth, end_depth) "
+                "VALUES (?,?,?,?,?,0,?,?,?,?)",
+                (contractor_id, month, year, hole_id, meters,
+                 start_date, end_date, start_depth, end_depth)
             )
             conn.commit()
             return cur.lastrowid
@@ -114,25 +120,34 @@ def get_all_hole_ids(contractor_id: int) -> list[str]:
 def get_standby_entries(contractor_id: int, month: int, year: int):
     with get_connection() as conn:
         return conn.execute(
-            "SELECT * FROM standby_entries WHERE contractor_id=? AND month=? AND year=? ORDER BY rig_name, id",
+            "SELECT * FROM standby_entries "
+            "WHERE contractor_id=? AND month=? AND year=? "
+            "ORDER BY entry_date, start_time, id",
             (contractor_id, month, year)
         ).fetchall()
 
 
 def upsert_standby_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
-                         rig_name: str, description: str, hours: float) -> int:
+                         entry_date: str, hole_id: str, start_time: str, end_time: str,
+                         standby_type: str, description: str, hours: float) -> int:
     with get_connection() as conn:
         if entry_id:
             conn.execute(
-                "UPDATE standby_entries SET rig_name=?, description=?, hours=? WHERE id=?",
-                (rig_name, description, hours, entry_id)
+                "UPDATE standby_entries SET entry_date=?, hole_id=?, start_time=?, end_time=?, "
+                "standby_type=?, description=?, hours=? WHERE id=?",
+                (entry_date, hole_id, start_time, end_time,
+                 standby_type, description, hours, entry_id)
             )
             conn.commit()
             return entry_id
         else:
             cur = conn.execute(
-                "INSERT INTO standby_entries (contractor_id, month, year, rig_name, description, hours) VALUES (?,?,?,?,?,?)",
-                (contractor_id, month, year, rig_name, description, hours)
+                "INSERT INTO standby_entries "
+                "(contractor_id, month, year, entry_date, hole_id, start_time, end_time, "
+                "standby_type, description, hours) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (contractor_id, month, year, entry_date, hole_id,
+                 start_time, end_time, standby_type, description, hours)
             )
             conn.commit()
             return cur.lastrowid
@@ -144,13 +159,16 @@ def delete_standby_entry(entry_id: int):
         conn.commit()
 
 
-def get_all_rig_names(contractor_id: int) -> list[str]:
+def get_all_hole_ids_for_standby(contractor_id: int) -> list[str]:
+    """All hole IDs seen in both drilling entries and standby entries."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT rig_name FROM standby_entries WHERE contractor_id=? ORDER BY rig_name",
-            (contractor_id,)
+            "SELECT DISTINCT hole_id FROM drilling_entries WHERE contractor_id=? "
+            "UNION SELECT DISTINCT hole_id FROM standby_entries WHERE contractor_id=? AND hole_id != '' "
+            "ORDER BY hole_id",
+            (contractor_id, contractor_id)
         ).fetchall()
-        return [r["rig_name"] for r in rows]
+        return [r["hole_id"] for r in rows]
 
 
 # ── PPE Charges ───────────────────────────────────────────────────────────────
@@ -220,4 +238,20 @@ def upsert_diesel_charge(charge_id: int | None, contractor_id: int, month: int, 
 def delete_diesel_charge(charge_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM diesel_charges WHERE id=?", (charge_id,))
+        conn.commit()
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+def get_setting(key: str, default: str = '') -> str:
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value)
+        )
         conn.commit()
