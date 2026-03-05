@@ -1,12 +1,12 @@
 """
 Generates a monthly drilling invoice Excel workbook.
 
-Layout per contractor sheet:
-  - Header block (project, contractor, period, exchange rate)
-  - Tablo-1: Borehole Drilling  (#, Hole, Start Date, End Date, S.Depth, E.Depth, Meters, Rate/m, Amount USD)
-  - Tablo-2: Standby Hours      (#, Date, Hole, Start, End, Type/Detail, Hours, Rate/hr, Amount USD)
-  - Tablo-3: Deductions (PPE / Diesel) — priced in TL, converted to USD
-  - Net Payable in USD and TL
+Layout:
+  - Summary sheet (index 0, when >1 contractor): totals per contractor
+  - Per contractor:
+      - Main sheet   : header + Tablo-1 drilling detail + standby/PPE subtotals only
+      - "Name - SB"  : full Standby Hours detail table
+      - "Name - PPE" : full PPE / Diesel detail table
 """
 
 from openpyxl import Workbook
@@ -76,6 +76,15 @@ def _col_headers(ws, row, labels, bg):
     return row + 1
 
 
+def _sheet_name(base, suffix, max_len=31):
+    """Truncate base so that 'base - suffix' fits within max_len."""
+    full = f"{base} - {suffix}"
+    if len(full) <= max_len:
+        return full
+    trim = max_len - len(suffix) - 3  # 3 = " - "
+    return f"{base[:trim]} - {suffix}"
+
+
 def generate_invoice(project_id, contractor_id, month, year, output_path,
                      usd_tl_rate: float = 1.0):
     project_rows = [p for p in m.get_projects() if p["id"] == project_id]
@@ -92,7 +101,7 @@ def generate_invoice(project_id, contractor_id, month, year, output_path,
     for contractor in contractors:
         if contractor_id != -1 and contractor["id"] != contractor_id:
             continue
-        _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data)
+        _build_contractor_sheets(wb, project, contractor, month, year, usd_tl_rate, summary_data)
 
     if len(summary_data) > 1:
         _build_summary_sheet(wb, summary_data, project, month, year, usd_tl_rate)
@@ -103,7 +112,9 @@ def generate_invoice(project_id, contractor_id, month, year, output_path,
     wb.save(output_path)
 
 
-def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data):
+# ── Per-contractor sheet builder ───────────────────────────────────────────────
+
+def _build_contractor_sheets(wb, project, contractor, month, year, usd_tl_rate, summary_data):
     cname  = contractor["name"]
     ctype  = contractor["type"]
     rate_m = contractor["rate_per_meter"]
@@ -113,10 +124,64 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
     standby_entries  = m.get_standby_entries(contractor["id"], month, year)
     ppe_rows = m.get_ppe_charges(contractor["id"], month, year)   if ctype == "underground" else []
     dsl_rows = m.get_diesel_charges(contractor["id"], month, year) if ctype == "surface"     else []
+    charge_rows = ppe_rows if ctype == "underground" else dsl_rows
 
-    ws = wb.create_sheet(title=cname[:31])
+    # ── Calculate totals ───────────────────────────────────────────────────────
+    total_meters = sum(e["meters_drilled"] for e in borehole_entries)
+    total_borehole = total_meters * rate_m
+
+    total_sb_hours = sum(e["hours"] for e in standby_entries)
+    total_standby  = total_sb_hours * rate_s
+
+    total_deductions_tl  = sum(r["quantity"] * r["unit_price"] for r in charge_rows)
+    total_deductions_usd = total_deductions_tl / usd_tl_rate if usd_tl_rate else 0.0
+
+    total_work = total_borehole + total_standby
+    net_usd    = total_work - total_deductions_usd
+    net_tl     = net_usd * usd_tl_rate
+
+    # ── Build the three sheets ─────────────────────────────────────────────────
+    ws_main = wb.create_sheet(title=cname[:31])
+    _build_main_sheet(ws_main, project, contractor, month, year, usd_tl_rate,
+                      borehole_entries, rate_m,
+                      total_meters, total_borehole,
+                      total_sb_hours, total_standby,
+                      total_deductions_tl, total_deductions_usd,
+                      total_work, net_usd, net_tl, ctype)
+
+    ws_sb = wb.create_sheet(title=_sheet_name(cname[:20], "Standby"))
+    _build_standby_sheet(ws_sb, cname, month, year, standby_entries, rate_s,
+                         total_sb_hours, total_standby)
+
+    deduct_label = "PPE" if ctype == "underground" else "Diesel"
+    ws_ppe = wb.create_sheet(title=_sheet_name(cname[:20], deduct_label))
+    _build_deductions_sheet(ws_ppe, cname, ctype, month, year, charge_rows,
+                            total_deductions_tl, total_deductions_usd, usd_tl_rate)
+
+    summary_data.append({
+        "name":       cname,
+        "type":       ctype,
+        "boreholes":  total_borehole,
+        "standby":    total_standby,
+        "deduct_tl":  total_deductions_tl,
+        "deduct_usd": total_deductions_usd,
+        "net_usd":    net_usd,
+        "net_tl":     net_tl,
+    })
+
+
+# ── Main contractor sheet (drilling detail + subtotals only) ───────────────────
+
+def _build_main_sheet(ws, project, contractor, month, year, usd_tl_rate,
+                      borehole_entries, rate_m,
+                      total_meters, total_borehole,
+                      total_sb_hours, total_standby,
+                      total_deductions_tl, total_deductions_usd,
+                      total_work, net_usd, net_tl, ctype):
+    cname  = contractor["name"]
+    rate_s = contractor["standby_hour_rate"]
+
     ws.sheet_view.showGridLines = False
-
     for i, w in enumerate(COL_WIDTHS, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -148,20 +213,16 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
 
     row += 1  # spacer
 
-    # ── Tablo-1: BOREHOLE DRILLING ─────────────────────────────────────────────
+    # ── Tablo-1: BOREHOLE DRILLING (full detail) ───────────────────────────────
     row = _section_header(ws, row, "  TABLO-1 — BOREHOLE DRILLING")
     row = _col_headers(ws, row, [
         "#", "Hole ID", "Start Date", "End Date",
         "Start Depth (m)", "End Depth (m)", "Meters", "Rate / m (USD)", "Amount (USD)"
     ], C_COL_HDR_BG)
 
-    total_meters = total_borehole = 0.0
     for idx, e in enumerate(borehole_entries, 1):
         meters = e["meters_drilled"]
         amount = meters * rate_m
-        total_meters   += meters
-        total_borehole += amount
-
         _cell(ws, row, 1, idx, align="center")
         _cell(ws, row, 2, e["hole_id"])
         _cell(ws, row, 3, e["start_date"],  align="center")
@@ -185,20 +246,118 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
     _cell(ws, row, 9, total_borehole, align="right", fmt='"$"#,##0.00', bold=True, bg=C_SUBTOTAL_BG)
     row += 2
 
-    # ── Tablo-2: STANDBY HOURS ────────────────────────────────────────────────
-    row = _section_header(ws, row, "  TABLO-2 — STANDBY HOURS", bg=C_STANDBY_BG)
+    # ── Tablo-2: STANDBY HOURS — totals only, detail on separate sheet ─────────
+    row = _section_header(ws, row, "  TABLO-2 — STANDBY HOURS  (see 'Standby' sheet for details)",
+                          bg=C_STANDBY_BG)
+    row = _col_headers(ws, row, [
+        "", "", "", "", "", "", "Total Hours", "Rate / hr (USD)", "Amount (USD)"
+    ], C_STANDBY_BG)
+
+    if not total_sb_hours:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+        _cell(ws, row, 1, "No standby entries for this period.", italic=True, align="center")
+        row += 1
+    else:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        _cell(ws, row, 1, "See 'Standby' sheet for full breakdown", italic=True,
+              align="center", bg="FFF3E0")
+        _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",     bg="FFF3E0")
+        _cell(ws, row, 8, rate_s,         align="right", fmt='"$"#,##0.00', bg="FFF3E0")
+        _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True, bg="FFF3E0")
+        row += 1
+
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    _cell(ws, row, 1, "STANDBY SUBTOTAL", bold=True, bg="FFE0B2", align="right", fg=C_STANDBY_BG)
+    _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",    bold=True, bg="FFE0B2")
+    _cell(ws, row, 8, "",             bg="FFE0B2")
+    _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True,
+          bg="FFE0B2", fg=C_STANDBY_BG)
+    row += 2
+
+    # ── Tablo-3: DEDUCTIONS — totals only, detail on separate sheet ────────────
+    deduct_label = "PPE CHARGES (DEDUCTION — TL)" if ctype == "underground" else "DIESEL CHARGES (DEDUCTION — TL)"
+    deduct_sheet = "PPE" if ctype == "underground" else "Diesel"
+    row = _section_header(ws, row,
+                          f"  TABLO-3 — {deduct_label}  (see '{deduct_sheet}' sheet for details)",
+                          bg=C_DEDUCT_BG)
+    row = _col_headers(ws, row, [
+        "", "", "", "", "", "", "", "Total (TL)", "Total (USD)"
+    ], C_DEDUCT_BG)
+
+    if not total_deductions_tl:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+        _cell(ws, row, 1, "No charges for this period.", italic=True, align="center")
+        row += 1
+    else:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+        _cell(ws, row, 1, f"See '{deduct_sheet}' sheet for full breakdown", italic=True,
+              align="center", bg="FFEBEE")
+        _cell(ws, row, 8, total_deductions_tl,  align="right", fmt='"₺"#,##0.00', bg="FFEBEE")
+        _cell(ws, row, 9, total_deductions_usd, align="right", fmt='"$"#,##0.00', bold=True,
+              bg="FFEBEE")
+        row += 1
+
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+    _cell(ws, row, 1, "DEDUCTION SUBTOTAL", bold=True, bg="FFCDD2", align="right")
+    _cell(ws, row, 8, total_deductions_tl,
+          align="right", fmt='"₺"#,##0.00', bold=True, bg="FFCDD2", fg=C_DEDUCT_BG)
+    _cell(ws, row, 9, total_deductions_usd,
+          align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=C_DEDUCT_BG)
+    row += 2
+
+    # ── Net Payable ────────────────────────────────────────────────────────────
+    def _net_row(label, value, fmt, bg, fg, size=12, height=26):
+        nonlocal row
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        c = ws.cell(row=row, column=1, value=label)
+        c.font = Font(bold=True, size=size, color=C_WHITE)
+        c.fill = PatternFill("solid", fgColor=bg)
+        c.alignment = Alignment(horizontal="right", vertical="center")
+        c.border = thick_bottom()
+        nc = ws.cell(row=row, column=9, value=value)
+        nc.font = Font(bold=True, size=size, color=fg)
+        nc.fill = PatternFill("solid", fgColor=C_NET_BG)
+        nc.alignment = Alignment(horizontal="right", vertical="center")
+        nc.border = thick_bottom()
+        nc.number_format = fmt
+        ws.row_dimensions[row].height = height
+        row += 1
+
+    _net_row("TOTAL WORK (USD)",       total_work,          '"$"#,##0.00', "455A64", "37474F")
+    _net_row("TOTAL DEDUCTIONS (TL)",  total_deductions_tl, '"₺"#,##0.00', C_DEDUCT_BG, C_DEDUCT_BG)
+    _net_row("TOTAL DEDUCTIONS (USD)", total_deductions_usd,'"$"#,##0.00', C_DEDUCT_BG, C_DEDUCT_BG)
+    _net_row("NET PAYABLE (USD)",      net_usd,             '"$"#,##0.00', "2E7D32", "1B5E20", size=14, height=32)
+    _net_row("NET PAYABLE (TL)",       net_tl,              '"₺"#,##0.00', "B71C1C", "B71C1C", size=13, height=28)
+
+
+# ── Standby detail sheet ───────────────────────────────────────────────────────
+
+def _build_standby_sheet(ws, cname, month, year, standby_entries, rate_s,
+                         total_sb_hours, total_standby):
+    ws.sheet_view.showGridLines = False
+    for i, w in enumerate(COL_WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    row = 1
+
+    ws.row_dimensions[row].height = 35
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+    c = ws.cell(row=row, column=1,
+                value=f"STANDBY HOURS — {cname} — {MONTHS[month-1]} {year}")
+    c.font = Font(bold=True, size=14, color=C_WHITE)
+    c.fill = PatternFill("solid", fgColor=C_STANDBY_BG)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    row += 2
+
+    row = _section_header(ws, row, "  STANDBY HOURS DETAIL", bg=C_STANDBY_BG)
     row = _col_headers(ws, row, [
         "#", "Date", "Hole ID", "Start", "End",
         "Type / Detail", "Hours", "Rate / hr (USD)", "Amount (USD)"
     ], C_STANDBY_BG)
 
-    total_sb_hours = total_standby = 0.0
     for idx, e in enumerate(standby_entries, 1):
         hours  = e["hours"]
         amount = hours * rate_s
-        total_sb_hours += hours
-        total_standby  += amount
-
         _cell(ws, row, 1, idx, align="center")
         _cell(ws, row, 2, e["entry_date"],  align="center")
         _cell(ws, row, 3, e["hole_id"])
@@ -219,30 +378,46 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
         row += 1
 
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
-    _cell(ws, row, 1, "STANDBY SUBTOTAL", bold=True, bg="FFE0B2", align="right", fg=C_STANDBY_BG)
+    _cell(ws, row, 1, "STANDBY TOTAL", bold=True, bg="FFE0B2", align="right", fg=C_STANDBY_BG)
     _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",    bold=True, bg="FFE0B2")
     _cell(ws, row, 8, "",             bg="FFE0B2")
     _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True,
           bg="FFE0B2", fg=C_STANDBY_BG)
+
+
+# ── PPE / Diesel detail sheet ──────────────────────────────────────────────────
+
+def _build_deductions_sheet(ws, cname, ctype, month, year, charge_rows,
+                            total_deductions_tl, total_deductions_usd, usd_tl_rate):
+    ws.sheet_view.showGridLines = False
+    for i, w in enumerate(COL_WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    is_ppe   = ctype == "underground"
+    bg_color = C_DEDUCT_BG
+    label    = "PPE CHARGES" if is_ppe else "DIESEL CHARGES"
+
+    row = 1
+    ws.row_dimensions[row].height = 35
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+    c = ws.cell(row=row, column=1,
+                value=f"{label} — {cname} — {MONTHS[month-1]} {year}")
+    c.font = Font(bold=True, size=14, color=C_WHITE)
+    c.fill = PatternFill("solid", fgColor=bg_color)
+    c.alignment = Alignment(horizontal="center", vertical="center")
     row += 2
 
-    # ── Tablo-3: DEDUCTIONS (in TL) ────────────────────────────────────────────
-    deduct_label = "PPE CHARGES (DEDUCTION — TL)" if ctype == "underground" else "DIESEL CHARGES (DEDUCTION — TL)"
-    row = _section_header(ws, row, f"  TABLO-3 — {deduct_label}", bg=C_DEDUCT_BG)
+    row = _section_header(ws, row, f"  {label} DETAIL (in TL)", bg=bg_color)
     row = _col_headers(ws, row, [
         "#", "Item / Description", "", "", "", "",
         "Quantity", "Unit Price (TL)", "Total (TL)"
-    ], C_DEDUCT_BG)
+    ], bg_color)
 
-    total_deductions_tl = 0.0
-    charge_rows = ppe_rows if ctype == "underground" else dsl_rows
     for idx, r in enumerate(charge_rows, 1):
-        name  = r["item_name"] if ctype == "underground" else r["description"]
+        name  = r["item_name"] if is_ppe else r["description"]
         qty   = r["quantity"]
         price = r["unit_price"]
         total = qty * price
-        total_deductions_tl += total
-
         _cell(ws, row, 1, idx, align="center")
         ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
         _cell(ws, row, 2, name)
@@ -256,63 +431,23 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
         _cell(ws, row, 1, "No charges for this period.", italic=True, align="center")
         row += 1
 
-    total_deductions_usd = total_deductions_tl / usd_tl_rate if usd_tl_rate else 0.0
-
     # TL subtotal
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
-    _cell(ws, row, 1, "DEDUCTION SUBTOTAL (TL)", bold=True, bg="FFEBEE", align="right")
+    _cell(ws, row, 1, "TOTAL (TL)", bold=True, bg="FFEBEE", align="right")
     _cell(ws, row, 9, total_deductions_tl,
-          align="right", fmt='"₺"#,##0.00', bold=True, bg="FFEBEE", fg=C_DEDUCT_BG)
+          align="right", fmt='"₺"#,##0.00', bold=True, bg="FFEBEE", fg=bg_color)
     row += 1
 
-    # TL → USD conversion row
+    # USD equivalent
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
     _cell(ws, row, 1,
-          f"DEDUCTION SUBTOTAL (USD)  [÷ {usd_tl_rate:,.4f} TL/USD]",
+          f"TOTAL (USD)  [÷ {usd_tl_rate:,.4f} TL/USD]",
           bold=True, bg="FFCDD2", align="right")
     _cell(ws, row, 9, total_deductions_usd,
-          align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=C_DEDUCT_BG)
-    row += 2
+          align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=bg_color)
 
-    # ── Net Payable section ────────────────────────────────────────────────────
-    total_work = total_borehole + total_standby
-    net_usd    = total_work - total_deductions_usd
-    net_tl     = net_usd * usd_tl_rate
 
-    def _net_row(label, value, fmt, bg, fg, size=12, height=26):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
-        c = ws.cell(row=row, column=1, value=label)
-        c.font = Font(bold=True, size=size, color=C_WHITE)
-        c.fill = PatternFill("solid", fgColor=bg)
-        c.alignment = Alignment(horizontal="right", vertical="center")
-        c.border = thick_bottom()
-        nc = ws.cell(row=row, column=9, value=value)
-        nc.font = Font(bold=True, size=size, color=fg)
-        nc.fill = PatternFill("solid", fgColor=C_NET_BG)
-        nc.alignment = Alignment(horizontal="right", vertical="center")
-        nc.border = thick_bottom()
-        nc.number_format = fmt
-        ws.row_dimensions[row].height = height
-        return row + 1
-
-    row = _net_row("TOTAL WORK (USD)",       total_work,          '"$"#,##0.00', "455A64", "37474F")
-    row = _net_row("TOTAL DEDUCTIONS (TL)",  total_deductions_tl, '"₺"#,##0.00', C_DEDUCT_BG, C_DEDUCT_BG)
-    row = _net_row("TOTAL DEDUCTIONS (USD)", total_deductions_usd,'"$"#,##0.00', C_DEDUCT_BG, C_DEDUCT_BG)
-    row = _net_row("NET PAYABLE (USD)",      net_usd,             '"$"#,##0.00', "2E7D32", "1B5E20", size=14, height=32)
-    row = _net_row("NET PAYABLE (TL)",       net_tl,              '"₺"#,##0.00', "B71C1C", "B71C1C", size=13, height=28)
-
-    summary_data.append({
-        "name":          cname,
-        "type":          ctype,
-        "boreholes":     total_borehole,
-        "standby":       total_standby,
-        "drilling":      total_work,
-        "deduct_tl":     total_deductions_tl,
-        "deduct_usd":    total_deductions_usd,
-        "net_usd":       net_usd,
-        "net_tl":        net_tl,
-    })
-
+# ── Summary sheet (multi-contractor) ──────────────────────────────────────────
 
 def _build_summary_sheet(wb, summary_data, project, month, year, usd_tl_rate):
     ws = wb.create_sheet(title="Summary", index=0)
