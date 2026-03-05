@@ -48,13 +48,16 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS ppe_charges (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
-            month         INTEGER NOT NULL,
-            year          INTEGER NOT NULL,
-            item_name     TEXT NOT NULL,
-            quantity      REAL NOT NULL DEFAULT 0,
-            unit_price    REAL NOT NULL DEFAULT 0
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            contractor_id   INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+            month           INTEGER NOT NULL,
+            year            INTEGER NOT NULL,
+            material_code   TEXT NOT NULL DEFAULT '',
+            item_name       TEXT NOT NULL,
+            quantity        REAL NOT NULL DEFAULT 0,
+            unit_of_measure TEXT NOT NULL DEFAULT '',
+            entry_date      TEXT NOT NULL DEFAULT '',
+            unit_price      REAL NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS diesel_charges (
@@ -107,6 +110,16 @@ def _migrate_db(conn):
     ]:
         if col not in existing:
             c.execute(f"ALTER TABLE drilling_entries ADD COLUMN {col} {defn}")
+
+    # ppe_charges new columns
+    existing = {r[1] for r in c.execute("PRAGMA table_info(ppe_charges)").fetchall()}
+    for col, defn in [
+        ("material_code",   "TEXT NOT NULL DEFAULT ''"),
+        ("unit_of_measure", "TEXT NOT NULL DEFAULT ''"),
+        ("entry_date",      "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        if col not in existing:
+            c.execute(f"ALTER TABLE ppe_charges ADD COLUMN {col} {defn}")
 
     # standby_entries new columns
     existing = {r[1] for r in c.execute("PRAGMA table_info(standby_entries)").fetchall()}
