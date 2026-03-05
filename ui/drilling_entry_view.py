@@ -302,8 +302,8 @@ class DrillingEntryView(QWidget):
         for e in entries:
             self._bh_append_row(
                 e["id"], e["hole_id"],
-                e.get("start_date", ""), e.get("end_date", ""),
-                e.get("start_depth", 0.0), e.get("end_depth", 0.0),
+                e["start_date"], e["end_date"],
+                e["start_depth"], e["end_depth"],
                 e["meters_drilled"], rate_m
             )
         self.bh_table.blockSignals(False)
@@ -501,11 +501,11 @@ class DrillingEntryView(QWidget):
         for e in entries:
             self._sb_append_row(
                 e["id"],
-                e.get("entry_date", ""),
-                e.get("hole_id", ""),
-                e.get("start_time", ""),
-                e.get("end_time", ""),
-                e.get("standby_type", ""),
+                e["entry_date"],
+                e["hole_id"],
+                e["start_time"],
+                e["end_time"],
+                e["standby_type"],
                 e["description"],
                 e["hours"],
                 rate_s
