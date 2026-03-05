@@ -2,11 +2,11 @@
 cd /d "%~dp0"
 
 echo Installing / upgrading PyInstaller...
-pip install --upgrade pyinstaller
+python -m pip install --upgrade pyinstaller
 
 echo.
 echo Building DrillInvoice.exe ...
-pyinstaller drill_invoice.spec --clean
+python -m PyInstaller drill_invoice.spec --clean
 
 echo.
 if exist "dist\DrillInvoice.exe" (
