@@ -100,6 +100,15 @@ def delete_drilling_entry(entry_id: int):
         conn.commit()
 
 
+def get_all_hole_ids(contractor_id: int) -> list[str]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT hole_id FROM drilling_entries WHERE contractor_id=? ORDER BY hole_id",
+            (contractor_id,)
+        ).fetchall()
+        return [r["hole_id"] for r in rows]
+
+
 # ── PPE Charges ───────────────────────────────────────────────────────────────
 
 def get_ppe_charges(contractor_id: int, month: int, year: int):
