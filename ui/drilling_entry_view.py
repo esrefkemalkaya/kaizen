@@ -2,10 +2,10 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QLabel, QComboBox, QMessageBox, QSplitter,
-    QFileDialog, QLineEdit, QStyledItemDelegate, QCompleter
+    QFileDialog, QLineEdit, QStyledItemDelegate, QCompleter, QApplication
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from datetime import datetime, timedelta
 
 import db.models as m
@@ -20,6 +20,52 @@ STANDBY_TYPES = [
     "Topograf beklendi", "Servis ekibi beklendi", "Hava koşulları",
     "Bakım", "Diğer",
 ]
+
+# Standby table column indices (matches Excel order)
+SB_COL_RIG   = 0   # Drill Rig
+SB_COL_HOLE  = 1   # Hole ID
+SB_COL_DATE  = 2   # Tarih
+SB_COL_START = 3   # Start
+SB_COL_END   = 4   # Finish
+SB_COL_TYPE  = 5   # Bekleme Türü
+SB_COL_DESC  = 6   # Detay
+SB_COL_HOURS = 7   # Bekleme(saat) — read-only, computed
+SB_COL_AMT   = 8   # Amount — read-only, computed
+
+SB_HEADERS = [
+    "Drill Rig", "Hole ID", "Date (Tarih)", "Start", "Finish (End)",
+    "Type (Bekleme Türü)", "Detail (Detay)", "Hours", "Amount"
+]
+
+# Excel header → app column index map (partial, case-insensitive)
+SB_EXCEL_MAP = {
+    "drill rig":     SB_COL_RIG,
+    "rig":           SB_COL_RIG,
+    "hole id":       SB_COL_HOLE,
+    "hole":          SB_COL_HOLE,
+    "tarih":         SB_COL_DATE,
+    "date":          SB_COL_DATE,
+    "start":         SB_COL_START,
+    "finish":        SB_COL_END,
+    "end":           SB_COL_END,
+    "bekleme türü":  SB_COL_TYPE,
+    "bekleme turu":  SB_COL_TYPE,
+    "tür":           SB_COL_TYPE,
+    "tur":           SB_COL_TYPE,
+    "detay":         SB_COL_DESC,
+    "detail":        SB_COL_DESC,
+    "bekleme(saat)": SB_COL_HOURS,
+    "bekleme":       SB_COL_HOURS,
+    "saat":          SB_COL_HOURS,
+}
+
+
+def _match_sb_col(header: str) -> int:
+    h = header.strip().lower()
+    for key, idx in SB_EXCEL_MAP.items():
+        if key in h or h in key:
+            return idx
+    return -1  # unknown
 
 
 def _calc_hours(start: str, end: str) -> float:
@@ -196,48 +242,64 @@ class DrillingEntryView(QWidget):
         self.sb_del_btn = QPushButton("Delete Row")
         self.sb_del_btn.setStyleSheet(BTN_DANGER)
         self.sb_del_btn.clicked.connect(self._sb_delete_row)
+        self.sb_import_btn = QPushButton("Import Excel…")
+        self.sb_import_btn.setStyleSheet(BTN_PRIMARY)
+        self.sb_import_btn.clicked.connect(self._sb_import_excel)
+        self.sb_paste_btn = QPushButton("Paste from Excel (Ctrl+V)")
+        self.sb_paste_btn.setStyleSheet(BTN_PRIMARY)
+        self.sb_paste_btn.clicked.connect(self._sb_paste_clipboard)
         self.sb_save_btn = QPushButton("Save Standby")
         self.sb_save_btn.setStyleSheet(BTN_SUCCESS)
         self.sb_save_btn.clicked.connect(self._sb_save)
-        for btn in [self.sb_add_btn, self.sb_del_btn, self.sb_save_btn]:
+        for btn in [self.sb_add_btn, self.sb_del_btn,
+                    self.sb_import_btn, self.sb_paste_btn, self.sb_save_btn]:
             sb_action.addWidget(btn)
         sb_action.addStretch()
         sb_layout.addLayout(sb_action)
 
-        # Cols: Date | Hole ID | Start | End | Type | Detail | Hours | Amount
+        hint = QLabel("Tip: Copy rows from your standby Excel sheet then click 'Paste from Excel' or Ctrl+V.")
+        hint.setStyleSheet("color: #607d8b; font-size: 11px;")
+        sb_layout.addWidget(hint)
+
+        # 9 cols matching Excel: Rig | Hole | Date | Start | End | Type | Detail | Hours | Amount
         self.sb_table = QTableWidget()
         self.sb_table.setStyleSheet(TABLE_STYLE)
-        self.sb_table.setColumnCount(8)
-        self.sb_table.setHorizontalHeaderLabels([
-            "Date", "Hole ID", "Start", "End",
-            "Type", "Detail / Reason", "Hours", "Amount"
-        ])
-        self.sb_table.setColumnWidth(0, 90)
-        self.sb_table.setColumnWidth(1, 130)
-        self.sb_table.setColumnWidth(2, 65)
-        self.sb_table.setColumnWidth(3, 65)
-        self.sb_table.setColumnWidth(4, 140)
-        self.sb_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        self.sb_table.setColumnWidth(6, 65)
-        self.sb_table.setColumnWidth(7, 110)
+        self.sb_table.setColumnCount(9)
+        self.sb_table.setHorizontalHeaderLabels(SB_HEADERS)
+        self.sb_table.setColumnWidth(SB_COL_RIG,   110)
+        self.sb_table.setColumnWidth(SB_COL_HOLE,  110)
+        self.sb_table.setColumnWidth(SB_COL_DATE,   90)
+        self.sb_table.setColumnWidth(SB_COL_START,  65)
+        self.sb_table.setColumnWidth(SB_COL_END,    65)
+        self.sb_table.setColumnWidth(SB_COL_TYPE,  130)
+        self.sb_table.horizontalHeader().setSectionResizeMode(SB_COL_DESC, QHeaderView.ResizeMode.Stretch)
+        self.sb_table.setColumnWidth(SB_COL_HOURS,  65)
+        self.sb_table.setColumnWidth(SB_COL_AMT,   110)
         self.sb_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.sb_table.verticalHeader().setVisible(False)
-        self.sb_table.setItemDelegateForColumn(1, self._sb_hole_delegate)
-        self.sb_table.setItemDelegateForColumn(4, self._type_delegate)
+        self.sb_table.setItemDelegateForColumn(SB_COL_HOLE, self._sb_hole_delegate)
+        self.sb_table.setItemDelegateForColumn(SB_COL_TYPE, self._type_delegate)
         self.sb_table.itemChanged.connect(self._sb_on_item_changed)
         sb_layout.addWidget(self.sb_table)
 
+        # Ctrl+V shortcut on standby table
+        sb_sc = QShortcut(QKeySequence("Ctrl+V"), self.sb_table)
+        sb_sc.activated.connect(self._sb_paste_clipboard)
+
         sb_footer = QHBoxLayout()
         self.sb_hours_lbl = QLabel("Total Hours: 0.00")
-        self.sb_amount_lbl = QLabel("Total: $0.00")
+        self.sb_blast_lbl = QLabel("")
+        self.sb_blast_lbl.setStyleSheet("color: #b71c1c; font-size: 11px;")
+        self.sb_amount_lbl = QLabel("Net Payable: $0.00")
         self.sb_amount_lbl.setStyleSheet("font-weight: bold; color: #e65100;")
         sb_footer.addWidget(self.sb_hours_lbl)
+        sb_footer.addWidget(self.sb_blast_lbl)
         sb_footer.addStretch()
         sb_footer.addWidget(self.sb_amount_lbl)
         sb_layout.addLayout(sb_footer)
 
         splitter.addWidget(sb_widget)
-        splitter.setSizes([380, 280])
+        splitter.setSizes([380, 340])
         layout.addWidget(splitter)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -501,39 +563,41 @@ class DrillingEntryView(QWidget):
         for e in entries:
             self._sb_append_row(
                 e["id"],
-                e["entry_date"],
+                e["rig_name"],
                 e["hole_id"],
+                e["entry_date"],
                 e["start_time"],
                 e["end_time"],
                 e["standby_type"],
                 e["description"],
                 e["hours"],
-                rate_s
+                rate_s,
             )
         self.sb_table.blockSignals(False)
         self._sb_update_totals()
 
-    def _sb_append_row(self, db_id, entry_date, hole_id, start_time,
-                       end_time, standby_type, description, hours, rate_s):
+    def _sb_append_row(self, db_id, rig_name, hole_id, entry_date,
+                       start_time, end_time, standby_type, description, hours, rate_s):
         row = self.sb_table.rowCount()
         self.sb_table.insertRow(row)
         self._standby_ids.append(db_id)
 
-        self.sb_table.setItem(row, 0, QTableWidgetItem(str(entry_date)))
-        self.sb_table.setItem(row, 1, QTableWidgetItem(str(hole_id)))
-        self.sb_table.setItem(row, 2, QTableWidgetItem(str(start_time)))
-        self.sb_table.setItem(row, 3, QTableWidgetItem(str(end_time)))
-        self.sb_table.setItem(row, 4, QTableWidgetItem(str(standby_type)))
-        self.sb_table.setItem(row, 5, QTableWidgetItem(str(description)))
+        self.sb_table.setItem(row, SB_COL_RIG,   QTableWidgetItem(str(rig_name or "")))
+        self.sb_table.setItem(row, SB_COL_HOLE,  QTableWidgetItem(str(hole_id or "")))
+        self.sb_table.setItem(row, SB_COL_DATE,  QTableWidgetItem(str(entry_date or "")))
+        self.sb_table.setItem(row, SB_COL_START, QTableWidgetItem(str(start_time or "")))
+        self.sb_table.setItem(row, SB_COL_END,   QTableWidgetItem(str(end_time or "")))
+        self.sb_table.setItem(row, SB_COL_TYPE,  QTableWidgetItem(str(standby_type or "")))
+        self.sb_table.setItem(row, SB_COL_DESC,  QTableWidgetItem(str(description or "")))
 
         hrs_item = QTableWidgetItem(f"{hours:.2f}")
         hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.sb_table.setItem(row, 6, hrs_item)
+        self.sb_table.setItem(row, SB_COL_HOURS, hrs_item)
 
         amt_item = QTableWidgetItem(f"${hours * rate_s:,.2f}")
         amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt_item.setForeground(QColor("#e65100"))
-        self.sb_table.setItem(row, 7, amt_item)
+        self.sb_table.setItem(row, SB_COL_AMT, amt_item)
 
     def _sb_add_row(self):
         if not self._contractor_id:
@@ -541,7 +605,7 @@ class DrillingEntryView(QWidget):
             return
         _, rate_s = self._get_rate()
         self.sb_table.blockSignals(True)
-        self._sb_append_row(None, "", "", "", "", "", "", 0, rate_s)
+        self._sb_append_row(None, "", "", "", "", "", "", "", 0, rate_s)
         self.sb_table.blockSignals(False)
 
     def _sb_delete_row(self):
@@ -570,24 +634,33 @@ class DrillingEntryView(QWidget):
             return
         errors = []
         for row in range(self.sb_table.rowCount()):
-            entry_date   = (self.sb_table.item(row, 0) or QTableWidgetItem("")).text().strip()
-            hole_id      = (self.sb_table.item(row, 1) or QTableWidgetItem("")).text().strip()
-            start_time   = (self.sb_table.item(row, 2) or QTableWidgetItem("")).text().strip()
-            end_time     = (self.sb_table.item(row, 3) or QTableWidgetItem("")).text().strip()
-            standby_type = (self.sb_table.item(row, 4) or QTableWidgetItem("")).text().strip()
-            description  = (self.sb_table.item(row, 5) or QTableWidgetItem("")).text().strip()
+            rig_name     = self._sb_cell(row, SB_COL_RIG)
+            hole_id      = self._sb_cell(row, SB_COL_HOLE)
+            entry_date   = self._sb_cell(row, SB_COL_DATE)
+            start_time   = self._sb_cell(row, SB_COL_START)
+            end_time     = self._sb_cell(row, SB_COL_END)
+            standby_type = self._sb_cell(row, SB_COL_TYPE)
+            description  = self._sb_cell(row, SB_COL_DESC)
 
             if not start_time and not end_time and not description:
                 errors.append(f"Row {row + 1}: Start/End time or description required.")
                 continue
 
-            hours = _calc_hours(start_time, end_time) if start_time and end_time else 0.0
+            # Use pre-computed hours if start/end unavailable (e.g. imported)
+            if start_time and end_time:
+                hours = _calc_hours(start_time, end_time)
+            else:
+                try:
+                    hours = float(self._sb_cell(row, SB_COL_HOURS) or 0)
+                except ValueError:
+                    hours = 0.0
 
             db_id = self._standby_ids[row]
             new_id = m.upsert_standby_entry(
                 db_id, cid, month, year,
                 entry_date, hole_id, start_time, end_time,
-                standby_type, description, hours
+                standby_type, description, hours,
+                rig_name=rig_name,
             )
             self._standby_ids[row] = new_id
 
@@ -597,37 +670,220 @@ class DrillingEntryView(QWidget):
             QMessageBox.information(self, "Saved", "Standby entries saved successfully.")
         self._load_standby()
 
+    def _sb_cell(self, row, col) -> str:
+        it = self.sb_table.item(row, col)
+        return it.text().strip() if it else ""
+
     def _sb_on_item_changed(self, item):
         row = item.row()
         col = item.column()
-        if col not in (2, 3):
+        if col not in (SB_COL_START, SB_COL_END):
             return
-        start = (self.sb_table.item(row, 2) or QTableWidgetItem("")).text().strip()
-        end   = (self.sb_table.item(row, 3) or QTableWidgetItem("")).text().strip()
+        start = self._sb_cell(row, SB_COL_START)
+        end   = self._sb_cell(row, SB_COL_END)
         hours = _calc_hours(start, end) if start and end else 0.0
         _, rate_s = self._get_rate()
 
         self.sb_table.blockSignals(True)
         hrs_item = QTableWidgetItem(f"{hours:.2f}")
         hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.sb_table.setItem(row, 6, hrs_item)
+        self.sb_table.setItem(row, SB_COL_HOURS, hrs_item)
 
         amt = QTableWidgetItem(f"${hours * rate_s:,.2f}")
         amt.setFlags(amt.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt.setForeground(QColor("#e65100"))
-        self.sb_table.setItem(row, 7, amt)
+        self.sb_table.setItem(row, SB_COL_AMT, amt)
         self.sb_table.blockSignals(False)
         self._sb_update_totals()
 
     def _sb_update_totals(self):
         _, rate_s = self._get_rate()
-        total_h = total_amt = 0.0
+
+        # Build fake entry dicts from table for blasting calc
+        entries = []
         for row in range(self.sb_table.rowCount()):
             try:
-                hours = float((self.sb_table.item(row, 6) or QTableWidgetItem("0")).text())
+                hours = float(self._sb_cell(row, SB_COL_HOURS) or 0)
             except ValueError:
+                hours = 0.0
+            entries.append({
+                "rig_name":     self._sb_cell(row, SB_COL_RIG) or "Unknown",
+                "standby_type": self._sb_cell(row, SB_COL_TYPE),
+                "hours":        hours,
+            })
+
+        rig_summary, total_payable_hours, total_amount = m.calc_standby_rig_summary(entries, rate_s)
+        total_raw = sum(e["hours"] for e in entries)
+
+        self.sb_hours_lbl.setText(f"Raw Total: {total_raw:,.2f} h")
+
+        # Build blasting deduction info string
+        blast_parts = []
+        for r in rig_summary:
+            if r["blasting_total"] > 0:
+                blast_parts.append(
+                    f"{r['rig']}: {r['blasting_total']:.2f}h blast "
+                    f"(−{r['blasting_free']:.2f} free, {r['blasting_paid']:.2f} paid)"
+                )
+        if blast_parts:
+            self.sb_blast_lbl.setText("  |  Blasting: " + "  |  ".join(blast_parts))
+        else:
+            self.sb_blast_lbl.setText("")
+
+        self.sb_amount_lbl.setText(
+            f"Net Payable: {total_payable_hours:,.2f} h  →  ${total_amount:,.2f}"
+        )
+
+    # ── Standby Import from Excel file ────────────────────────────────────────
+
+    def _sb_import_excel(self):
+        if not self._contractor_id:
+            QMessageBox.information(self, "Select", "Select a contractor first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Standby Excel File", "",
+            "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            rows = self._sb_read_excel(path)
+            self._sb_load_rows(rows)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", str(e))
+
+    def _sb_read_excel(self, path: str) -> list[dict]:
+        from openpyxl import load_workbook
+        wb = load_workbook(path, data_only=True)
+        ws = wb.active
+        rows_iter = ws.iter_rows(values_only=True)
+        headers = [str(h or "").strip() for h in next(rows_iter)]
+        col_map = [_match_sb_col(h) for h in headers]
+        result = []
+        for raw_row in rows_iter:
+            if all(v is None or str(v).strip() == "" for v in raw_row):
                 continue
-            total_h += hours
-            total_amt += hours * rate_s
-        self.sb_hours_lbl.setText(f"Total Hours: {total_h:,.2f}")
-        self.sb_amount_lbl.setText(f"Total: ${total_amt:,.2f}")
+            entry = {}
+            for pos, val in enumerate(raw_row):
+                if pos >= len(col_map):
+                    break
+                app_col = col_map[pos]
+                if app_col < 0:
+                    continue
+                entry[app_col] = val
+            result.append(entry)
+        return result
+
+    def _sb_load_rows(self, rows: list[dict]):
+        _, rate_s = self._get_rate()
+        self.sb_table.blockSignals(True)
+        added = 0
+        for entry in rows:
+            row_idx = self.sb_table.rowCount()
+            self.sb_table.insertRow(row_idx)
+            self._standby_ids.append(None)
+            for col, val in entry.items():
+                if col in (SB_COL_HOURS, SB_COL_AMT):
+                    continue  # will compute below
+                self.sb_table.setItem(row_idx, col, QTableWidgetItem(str(val) if val is not None else ""))
+            # Compute hours from start/end or use imported hours
+            start = self._sb_cell(row_idx, SB_COL_START)
+            end   = self._sb_cell(row_idx, SB_COL_END)
+            if start and end:
+                hours = _calc_hours(start, end)
+            elif SB_COL_HOURS in entry:
+                try:
+                    hours = float(str(entry[SB_COL_HOURS]).replace(",", "") or 0)
+                except ValueError:
+                    hours = 0.0
+            else:
+                hours = 0.0
+            hrs_item = QTableWidgetItem(f"{hours:.2f}")
+            hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.sb_table.setItem(row_idx, SB_COL_HOURS, hrs_item)
+            amt_item = QTableWidgetItem(f"${hours * rate_s:,.2f}")
+            amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            amt_item.setForeground(QColor("#e65100"))
+            self.sb_table.setItem(row_idx, SB_COL_AMT, amt_item)
+            added += 1
+        self.sb_table.blockSignals(False)
+        self._sb_update_totals()
+        QMessageBox.information(self, "Imported",
+                                f"{added} row(s) added. Click 'Save Standby' to store them.")
+
+    # ── Standby Paste from clipboard ──────────────────────────────────────────
+
+    def _sb_paste_clipboard(self):
+        if not self._contractor_id:
+            QMessageBox.information(self, "Select", "Select a contractor first.")
+            return
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            QMessageBox.information(self, "Empty Clipboard",
+                                    "Nothing in clipboard. Copy rows from Excel first.")
+            return
+        lines = text.strip().split("\n")
+        if not lines:
+            return
+
+        first = lines[0].lower()
+        has_header = any(k in first for k in (
+            "rig", "drill", "hole", "tarih", "date", "start", "finish",
+            "bekleme", "detay", "saat"
+        ))
+        if has_header:
+            col_map = [_match_sb_col(h) for h in lines[0].split("\t")]
+            data_lines = lines[1:]
+        else:
+            # Assume Excel column order: Rig | Hole | Date | Start | Finish | Type | Detail | Hours
+            col_map = [SB_COL_RIG, SB_COL_HOLE, SB_COL_DATE,
+                       SB_COL_START, SB_COL_END, SB_COL_TYPE, SB_COL_DESC, SB_COL_HOURS]
+            data_lines = lines
+
+        _, rate_s = self._get_rate()
+        self.sb_table.blockSignals(True)
+        added = 0
+        for line in data_lines:
+            cells = line.rstrip("\r").split("\t")
+            if all(c.strip() == "" for c in cells):
+                continue
+            row_idx = self.sb_table.rowCount()
+            self.sb_table.insertRow(row_idx)
+            self._standby_ids.append(None)
+            imported_hours = None
+            for pos, cell_val in enumerate(cells):
+                if pos >= len(col_map):
+                    break
+                app_col = col_map[pos]
+                if app_col < 0:
+                    continue
+                if app_col == SB_COL_HOURS:
+                    try:
+                        imported_hours = float(cell_val.replace(",", "").strip())
+                    except ValueError:
+                        pass
+                    continue  # set below after computing
+                if app_col == SB_COL_AMT:
+                    continue
+                self.sb_table.setItem(row_idx, app_col, QTableWidgetItem(cell_val.strip()))
+            # Compute hours
+            start = self._sb_cell(row_idx, SB_COL_START)
+            end   = self._sb_cell(row_idx, SB_COL_END)
+            if start and end:
+                hours = _calc_hours(start, end)
+            elif imported_hours is not None:
+                hours = imported_hours
+            else:
+                hours = 0.0
+            hrs_item = QTableWidgetItem(f"{hours:.2f}")
+            hrs_item.setFlags(hrs_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.sb_table.setItem(row_idx, SB_COL_HOURS, hrs_item)
+            amt_item = QTableWidgetItem(f"${hours * rate_s:,.2f}")
+            amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            amt_item.setForeground(QColor("#e65100"))
+            self.sb_table.setItem(row_idx, SB_COL_AMT, amt_item)
+            added += 1
+        self.sb_table.blockSignals(False)
+        self._sb_update_totals()
+        QMessageBox.information(self, "Pasted",
+                                f"{added} row(s) added. Click 'Save Standby' to store them.")

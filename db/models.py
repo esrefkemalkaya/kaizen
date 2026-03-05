@@ -129,14 +129,15 @@ def get_standby_entries(contractor_id: int, month: int, year: int):
 
 def upsert_standby_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
                          entry_date: str, hole_id: str, start_time: str, end_time: str,
-                         standby_type: str, description: str, hours: float) -> int:
+                         standby_type: str, description: str, hours: float,
+                         rig_name: str = "") -> int:
     with get_connection() as conn:
         if entry_id:
             conn.execute(
                 "UPDATE standby_entries SET entry_date=?, hole_id=?, start_time=?, end_time=?, "
-                "standby_type=?, description=?, hours=? WHERE id=?",
+                "standby_type=?, description=?, hours=?, rig_name=? WHERE id=?",
                 (entry_date, hole_id, start_time, end_time,
-                 standby_type, description, hours, entry_id)
+                 standby_type, description, hours, rig_name, entry_id)
             )
             conn.commit()
             return entry_id
@@ -144,10 +145,10 @@ def upsert_standby_entry(entry_id: int | None, contractor_id: int, month: int, y
             cur = conn.execute(
                 "INSERT INTO standby_entries "
                 "(contractor_id, month, year, entry_date, hole_id, start_time, end_time, "
-                "standby_type, description, hours) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "standby_type, description, hours, rig_name) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (contractor_id, month, year, entry_date, hole_id,
-                 start_time, end_time, standby_type, description, hours)
+                 start_time, end_time, standby_type, description, hours, rig_name)
             )
             conn.commit()
             return cur.lastrowid
@@ -157,6 +158,52 @@ def delete_standby_entry(entry_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM standby_entries WHERE id=?", (entry_id,))
         conn.commit()
+
+
+def calc_standby_rig_summary(entries, rate_s: float):
+    """
+    Apply blasting (Patlatma) deduction rule per rig:
+      - Each rig gets 24 free Patlatma hours per month (routine underground operation).
+      - Patlatma hours beyond 24 are payable like any other standby.
+      - All non-Patlatma standby types are always payable in full.
+
+    Returns:
+        (rig_rows, total_payable_hours, total_amount)
+        rig_rows: list of dicts per rig, sorted by rig name
+    """
+    from collections import defaultdict
+    rigs = defaultdict(lambda: {"blasting": 0.0, "other": 0.0})
+    for e in entries:
+        rig   = (e["rig_name"] or "").strip() or "Unknown"
+        hours = float(e["hours"] or 0)
+        if (e["standby_type"] or "").strip().lower() == "patlatma":
+            rigs[rig]["blasting"] += hours
+        else:
+            rigs[rig]["other"] += hours
+
+    result = []
+    total_payable_hours = 0.0
+    total_amount = 0.0
+    for rig in sorted(rigs):
+        d = rigs[rig]
+        blasting_total = d["blasting"]
+        blasting_free  = min(blasting_total, 24.0)
+        blasting_paid  = max(0.0, blasting_total - 24.0)
+        other          = d["other"]
+        payable_hours  = other + blasting_paid
+        amount         = payable_hours * rate_s
+        total_payable_hours += payable_hours
+        total_amount        += amount
+        result.append({
+            "rig":            rig,
+            "other":          other,
+            "blasting_total": blasting_total,
+            "blasting_free":  blasting_free,
+            "blasting_paid":  blasting_paid,
+            "payable_hours":  payable_hours,
+            "amount":         amount,
+        })
+    return result, total_payable_hours, total_amount
 
 
 def get_all_hole_ids_for_standby(contractor_id: int) -> list[str]:

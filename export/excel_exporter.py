@@ -130,8 +130,10 @@ def _build_contractor_sheets(wb, project, contractor, month, year, usd_tl_rate, 
     total_meters = sum(e["meters_drilled"] for e in borehole_entries)
     total_borehole = total_meters * rate_m
 
-    total_sb_hours = sum(e["hours"] for e in standby_entries)
-    total_standby  = total_sb_hours * rate_s
+    # Apply blasting deduction rule: each rig gets 24 free Patlatma hrs/month
+    rig_summary, total_payable_sb_hours, total_standby = \
+        m.calc_standby_rig_summary(standby_entries, rate_s)
+    total_sb_hours_raw = sum(e["hours"] for e in standby_entries)
 
     total_deductions_tl  = sum(r["quantity"] * r["unit_price"] for r in charge_rows)
     total_deductions_usd = total_deductions_tl / usd_tl_rate if usd_tl_rate else 0.0
@@ -145,13 +147,13 @@ def _build_contractor_sheets(wb, project, contractor, month, year, usd_tl_rate, 
     _build_main_sheet(ws_main, project, contractor, month, year, usd_tl_rate,
                       borehole_entries, rate_m,
                       total_meters, total_borehole,
-                      total_sb_hours, total_standby,
+                      rig_summary, total_payable_sb_hours, total_standby,
                       total_deductions_tl, total_deductions_usd,
                       total_work, net_usd, net_tl, ctype)
 
     ws_sb = wb.create_sheet(title=_sheet_name(cname[:20], "Standby"))
     _build_standby_sheet(ws_sb, cname, month, year, standby_entries, rate_s,
-                         total_sb_hours, total_standby)
+                         rig_summary, total_payable_sb_hours, total_standby)
 
     deduct_label = "PPE" if ctype == "underground" else "Diesel"
     ws_ppe = wb.create_sheet(title=_sheet_name(cname[:20], deduct_label))
@@ -175,7 +177,7 @@ def _build_contractor_sheets(wb, project, contractor, month, year, usd_tl_rate, 
 def _build_main_sheet(ws, project, contractor, month, year, usd_tl_rate,
                       borehole_entries, rate_m,
                       total_meters, total_borehole,
-                      total_sb_hours, total_standby,
+                      rig_summary, total_payable_sb_hours, total_standby,
                       total_deductions_tl, total_deductions_usd,
                       total_work, net_usd, net_tl, ctype):
     cname  = contractor["name"]
@@ -246,32 +248,45 @@ def _build_main_sheet(ws, project, contractor, month, year, usd_tl_rate,
     _cell(ws, row, 9, total_borehole, align="right", fmt='"$"#,##0.00', bold=True, bg=C_SUBTOTAL_BG)
     row += 2
 
-    # ── Tablo-2: STANDBY HOURS — totals only, detail on separate sheet ─────────
-    row = _section_header(ws, row, "  TABLO-2 — STANDBY HOURS  (see 'Standby' sheet for details)",
+    # ── Tablo-2: STANDBY HOURS — per-rig summary, details on separate sheet ──────
+    row = _section_header(ws, row,
+                          "  TABLO-2 — STANDBY HOURS  (see 'Standby' sheet for full detail)",
                           bg=C_STANDBY_BG)
+    # Per-rig columns: Rig | Non-Blast (h) | Blast Total (h) | −24h Free | Blast Paid (h) | Net Payable (h) | Rate | Amount
     row = _col_headers(ws, row, [
-        "", "", "", "", "", "", "Total Hours", "Rate / hr (USD)", "Amount (USD)"
+        "Drill Rig", "Non-Blasting (h)", "Patlatma Total (h)",
+        "−24h Free", "Patlatma Paid (h)", "Net Payable (h)", "Rate / hr", "Amount (USD)", ""
     ], C_STANDBY_BG)
 
-    if not total_sb_hours:
+    if not rig_summary:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
         _cell(ws, row, 1, "No standby entries for this period.", italic=True, align="center")
         row += 1
     else:
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
-        _cell(ws, row, 1, "See 'Standby' sheet for full breakdown", italic=True,
-              align="center", bg="FFF3E0")
-        _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",     bg="FFF3E0")
-        _cell(ws, row, 8, rate_s,         align="right", fmt='"$"#,##0.00', bg="FFF3E0")
-        _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True, bg="FFF3E0")
-        row += 1
+        for r in rig_summary:
+            _cell(ws, row, 1, r["rig"], bold=True, bg="FFF3E0")
+            _cell(ws, row, 2, r["other"],          align="right", fmt="#,##0.00", bg="FFF3E0")
+            _cell(ws, row, 3, r["blasting_total"],  align="right", fmt="#,##0.00", bg="FFF3E0")
+            _cell(ws, row, 4, -r["blasting_free"],  align="right", fmt="#,##0.00", bg="FFF3E0",
+                  fg="B71C1C")
+            _cell(ws, row, 5, r["blasting_paid"],   align="right", fmt="#,##0.00", bg="FFF3E0")
+            _cell(ws, row, 6, r["payable_hours"],   align="right", fmt="#,##0.00", bg="FFF3E0",
+                  bold=True)
+            _cell(ws, row, 7, rate_s, align="right", fmt='"$"#,##0.00', bg="FFF3E0")
+            _cell(ws, row, 8, r["amount"], align="right", fmt='"$"#,##0.00', bg="FFF3E0",
+                  bold=True)
+            _cell(ws, row, 9, "", bg="FFF3E0")
+            row += 1
 
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
-    _cell(ws, row, 1, "STANDBY SUBTOTAL", bold=True, bg="FFE0B2", align="right", fg=C_STANDBY_BG)
-    _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",    bold=True, bg="FFE0B2")
-    _cell(ws, row, 8, "",             bg="FFE0B2")
-    _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True,
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+    _cell(ws, row, 1, "STANDBY SUBTOTAL (NET PAYABLE)", bold=True, bg="FFE0B2",
+          align="right", fg=C_STANDBY_BG)
+    _cell(ws, row, 6, total_payable_sb_hours, align="right", fmt="#,##0.00",
+          bold=True, bg="FFE0B2")
+    _cell(ws, row, 7, "",          bg="FFE0B2")
+    _cell(ws, row, 8, total_standby, align="right", fmt='"$"#,##0.00', bold=True,
           bg="FFE0B2", fg=C_STANDBY_BG)
+    _cell(ws, row, 9, "",          bg="FFE0B2")
     row += 2
 
     # ── Tablo-3: DEDUCTIONS — totals only, detail on separate sheet ────────────
@@ -333,15 +348,17 @@ def _build_main_sheet(ws, project, contractor, month, year, usd_tl_rate,
 # ── Standby detail sheet ───────────────────────────────────────────────────────
 
 def _build_standby_sheet(ws, cname, month, year, standby_entries, rate_s,
-                         total_sb_hours, total_standby):
+                         rig_summary, total_payable_sb_hours, total_standby):
     ws.sheet_view.showGridLines = False
-    for i, w in enumerate(COL_WIDTHS, 1):
+    # 10 columns: # | Rig | Date | Hole | Start | End | Type | Detail | Hours | Amount
+    sb_widths = [5, 16, 11, 14, 9, 9, 18, 28, 9, 14]
+    for i, w in enumerate(sb_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
+    SBCOLS = 10
 
     row = 1
-
     ws.row_dimensions[row].height = 35
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=SBCOLS)
     c = ws.cell(row=row, column=1,
                 value=f"STANDBY HOURS — {cname} — {MONTHS[month-1]} {year}")
     c.font = Font(bold=True, size=14, color=C_WHITE)
@@ -349,40 +366,89 @@ def _build_standby_sheet(ws, cname, month, year, standby_entries, rate_s,
     c.alignment = Alignment(horizontal="center", vertical="center")
     row += 2
 
-    row = _section_header(ws, row, "  STANDBY HOURS DETAIL", bg=C_STANDBY_BG)
-    row = _col_headers(ws, row, [
-        "#", "Date", "Hole ID", "Start", "End",
-        "Type / Detail", "Hours", "Rate / hr (USD)", "Amount (USD)"
-    ], C_STANDBY_BG)
+    # ── Full detail table ──────────────────────────────────────────────────────
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=SBCOLS)
+    c2 = ws.cell(row=row, column=1, value="  STANDBY HOURS DETAIL")
+    c2.font = Font(bold=True, color=C_WHITE, size=12)
+    c2.fill = PatternFill("solid", fgColor=C_STANDBY_BG)
+    c2.alignment = Alignment(horizontal="left", vertical="center")
+    c2.border = thin_border()
+    row += 1
+
+    for col, h in enumerate([
+        "#", "Drill Rig", "Date", "Hole ID", "Start", "End",
+        "Type (Bekleme Türü)", "Detail (Detay)", "Hours", "Amount (USD)"
+    ], 1):
+        _cell(ws, row, col, h, bold=True, fg=C_WHITE, bg=C_STANDBY_BG, align="center")
+    row += 1
 
     for idx, e in enumerate(standby_entries, 1):
         hours  = e["hours"]
         amount = hours * rate_s
         _cell(ws, row, 1, idx, align="center")
-        _cell(ws, row, 2, e["entry_date"],  align="center")
-        _cell(ws, row, 3, e["hole_id"])
-        _cell(ws, row, 4, e["start_time"], align="center")
-        _cell(ws, row, 5, e["end_time"],   align="center")
-        detail = e["standby_type"]
-        if e["description"]:
-            detail = f"{detail} — {e['description']}" if detail else e["description"]
-        _cell(ws, row, 6, detail)
-        _cell(ws, row, 7, hours,  align="right", fmt="#,##0.00")
-        _cell(ws, row, 8, rate_s, align="right", fmt='"$"#,##0.00')
-        _cell(ws, row, 9, amount, align="right", fmt='"$"#,##0.00', bold=True)
+        _cell(ws, row, 2, e["rig_name"] if "rig_name" in e.keys() else "", bold=True)
+        _cell(ws, row, 3, e["entry_date"],  align="center")
+        _cell(ws, row, 4, e["hole_id"])
+        _cell(ws, row, 5, e["start_time"], align="center")
+        _cell(ws, row, 6, e["end_time"],   align="center")
+        _cell(ws, row, 7, e["standby_type"])
+        _cell(ws, row, 8, e["description"] or "")
+        _cell(ws, row, 9, hours,  align="right", fmt="#,##0.00")
+        _cell(ws, row, 10, amount, align="right", fmt='"$"#,##0.00', bold=True)
         row += 1
 
     if not standby_entries:
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=SBCOLS)
         _cell(ws, row, 1, "No standby entries for this period.", italic=True, align="center")
         row += 1
 
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
-    _cell(ws, row, 1, "STANDBY TOTAL", bold=True, bg="FFE0B2", align="right", fg=C_STANDBY_BG)
-    _cell(ws, row, 7, total_sb_hours, align="right", fmt="#,##0.00",    bold=True, bg="FFE0B2")
-    _cell(ws, row, 8, "",             bg="FFE0B2")
-    _cell(ws, row, 9, total_standby,  align="right", fmt='"$"#,##0.00', bold=True,
+    row += 1  # spacer
+
+    # ── Blasting deduction summary per rig ────────────────────────────────────
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=SBCOLS)
+    c3 = ws.cell(row=row, column=1,
+                 value="  PATLATMA (BLASTING) DEDUCTION SUMMARY  "
+                       "— each rig: 24 free hrs/month")
+    c3.font = Font(bold=True, color=C_WHITE, size=12)
+    c3.fill = PatternFill("solid", fgColor="B71C1C")
+    c3.alignment = Alignment(horizontal="left", vertical="center")
+    c3.border = thin_border()
+    row += 1
+
+    for col, h in enumerate([
+        "Drill Rig", "Non-Blasting (h)", "Patlatma Total (h)",
+        "−24h Free", "Patlatma Paid (h)", "Net Payable (h)",
+        "Rate / hr (USD)", "Net Amount (USD)", "", ""
+    ], 1):
+        _cell(ws, row, col, h, bold=True, fg=C_WHITE, bg="B71C1C", align="center")
+    row += 1
+
+    for r in rig_summary:
+        _cell(ws, row, 1, r["rig"], bold=True, bg="FFEBEE")
+        _cell(ws, row, 2, r["other"],          align="right", fmt="#,##0.00", bg="FFEBEE")
+        _cell(ws, row, 3, r["blasting_total"],  align="right", fmt="#,##0.00", bg="FFEBEE")
+        _cell(ws, row, 4, -r["blasting_free"],  align="right", fmt="#,##0.00", bg="FFEBEE",
+              fg="B71C1C")
+        _cell(ws, row, 5, r["blasting_paid"],   align="right", fmt="#,##0.00", bg="FFEBEE")
+        _cell(ws, row, 6, r["payable_hours"],   align="right", fmt="#,##0.00", bg="FFEBEE",
+              bold=True)
+        _cell(ws, row, 7, rate_s,               align="right", fmt='"$"#,##0.00', bg="FFEBEE")
+        _cell(ws, row, 8, r["amount"],          align="right", fmt='"$"#,##0.00', bg="FFEBEE",
+              bold=True)
+        _cell(ws, row, 9, "", bg="FFEBEE")
+        _cell(ws, row, 10, "", bg="FFEBEE")
+        row += 1
+
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+    _cell(ws, row, 1, "TOTAL NET PAYABLE", bold=True, bg="FFE0B2", align="right",
+          fg=C_STANDBY_BG)
+    _cell(ws, row, 6, total_payable_sb_hours, align="right", fmt="#,##0.00",
+          bold=True, bg="FFE0B2")
+    _cell(ws, row, 7, "",             bg="FFE0B2")
+    _cell(ws, row, 8, total_standby,  align="right", fmt='"$"#,##0.00', bold=True,
           bg="FFE0B2", fg=C_STANDBY_BG)
+    _cell(ws, row, 9, "", bg="FFE0B2")
+    _cell(ws, row, 10, "", bg="FFE0B2")
 
 
 # ── PPE / Diesel detail sheet ──────────────────────────────────────────────────
