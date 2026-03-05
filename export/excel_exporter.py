@@ -390,16 +390,25 @@ def _build_standby_sheet(ws, cname, month, year, standby_entries, rate_s,
 def _build_deductions_sheet(ws, cname, ctype, month, year, charge_rows,
                             total_deductions_tl, total_deductions_usd, usd_tl_rate):
     ws.sheet_view.showGridLines = False
-    for i, w in enumerate(COL_WIDTHS, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
     is_ppe   = ctype == "underground"
     bg_color = C_DEDUCT_BG
     label    = "PPE CHARGES" if is_ppe else "DIESEL CHARGES"
 
+    if is_ppe:
+        # 9 columns for PPE: # | Mat.Code | Description | Qty | Unit | Date | Unit Price | Total TL | Total USD
+        PPE_NCOLS = 9
+        ppe_widths = [5, 16, 30, 10, 10, 13, 16, 16, 16]
+        for i, w in enumerate(ppe_widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+    else:
+        for i, w in enumerate(COL_WIDTHS, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    ncols = 9  # both layouts use 9 cols
+
     row = 1
     ws.row_dimensions[row].height = 35
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
     c = ws.cell(row=row, column=1,
                 value=f"{label} — {cname} — {MONTHS[month-1]} {year}")
     c.font = Font(bold=True, size=14, color=C_WHITE)
@@ -407,44 +416,90 @@ def _build_deductions_sheet(ws, cname, ctype, month, year, charge_rows,
     c.alignment = Alignment(horizontal="center", vertical="center")
     row += 2
 
-    row = _section_header(ws, row, f"  {label} DETAIL (in TL)", bg=bg_color)
-    row = _col_headers(ws, row, [
-        "#", "Item / Description", "", "", "", "",
-        "Quantity", "Unit Price (TL)", "Total (TL)"
-    ], bg_color)
+    if is_ppe:
+        row = _section_header(ws, row, f"  {label} DETAIL (in TL)", bg=bg_color)
+        # Override NCOLS for section header — already merged to 9
+        row = _col_headers(ws, row, [
+            "#", "Material Code", "Description (Malzeme kısa metni)",
+            "Qty", "Unit", "Date", "Unit Price (TL)", "Total (TL)", "Total (USD)"
+        ], bg_color)
 
-    for idx, r in enumerate(charge_rows, 1):
-        name  = r["item_name"] if is_ppe else r["description"]
-        qty   = r["quantity"]
-        price = r["unit_price"]
-        total = qty * price
-        _cell(ws, row, 1, idx, align="center")
-        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
-        _cell(ws, row, 2, name)
-        _cell(ws, row, 7, qty,   align="right", fmt="#,##0.00")
-        _cell(ws, row, 8, price, align="right", fmt='"₺"#,##0.00')
-        _cell(ws, row, 9, total, align="right", fmt='"₺"#,##0.00', bold=True)
+        for idx, r in enumerate(charge_rows, 1):
+            qty   = r["quantity"]
+            price = r["unit_price"]
+            total_tl  = qty * price
+            total_usd = total_tl / usd_tl_rate if usd_tl_rate else 0.0
+            _cell(ws, row, 1, idx, align="center")
+            _cell(ws, row, 2, r["material_code"]   if "material_code"   in r.keys() else "")
+            _cell(ws, row, 3, r["item_name"])
+            _cell(ws, row, 4, qty,   align="right", fmt="#,##0.00")
+            _cell(ws, row, 5, r["unit_of_measure"] if "unit_of_measure" in r.keys() else "",
+                  align="center")
+            _cell(ws, row, 6, r["entry_date"]      if "entry_date"      in r.keys() else "",
+                  align="center")
+            _cell(ws, row, 7, price,     align="right", fmt='"₺"#,##0.00')
+            _cell(ws, row, 8, total_tl,  align="right", fmt='"₺"#,##0.00', bold=True)
+            _cell(ws, row, 9, total_usd, align="right", fmt='"$"#,##0.00', bold=True)
+            row += 1
+
+        if not charge_rows:
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+            _cell(ws, row, 1, "No charges for this period.", italic=True, align="center")
+            row += 1
+
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+        _cell(ws, row, 1, "TOTAL (TL)", bold=True, bg="FFEBEE", align="right")
+        _cell(ws, row, 8, total_deductions_tl,
+              align="right", fmt='"₺"#,##0.00', bold=True, bg="FFEBEE", fg=bg_color)
+        _cell(ws, row, 9, total_deductions_usd,
+              align="right", fmt='"$"#,##0.00', bold=True, bg="FFEBEE", fg=bg_color)
         row += 1
 
-    if not charge_rows:
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NCOLS)
-        _cell(ws, row, 1, "No charges for this period.", italic=True, align="center")
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+        _cell(ws, row, 1,
+              f"TOTAL (USD)  [÷ {usd_tl_rate:,.4f} TL/USD]",
+              bold=True, bg="FFCDD2", align="right")
+        _cell(ws, row, 8, "",                bg="FFCDD2")
+        _cell(ws, row, 9, total_deductions_usd,
+              align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=bg_color)
+
+    else:
+        # Diesel — original layout
+        row = _section_header(ws, row, f"  {label} DETAIL (in TL)", bg=bg_color)
+        row = _col_headers(ws, row, [
+            "#", "Item / Description", "", "", "", "",
+            "Quantity", "Unit Price (TL)", "Total (TL)"
+        ], bg_color)
+
+        for idx, r in enumerate(charge_rows, 1):
+            qty   = r["quantity"]
+            price = r["unit_price"]
+            total = qty * price
+            _cell(ws, row, 1, idx, align="center")
+            ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
+            _cell(ws, row, 2, r["description"])
+            _cell(ws, row, 7, qty,   align="right", fmt="#,##0.00")
+            _cell(ws, row, 8, price, align="right", fmt='"₺"#,##0.00')
+            _cell(ws, row, 9, total, align="right", fmt='"₺"#,##0.00', bold=True)
+            row += 1
+
+        if not charge_rows:
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+            _cell(ws, row, 1, "No charges for this period.", italic=True, align="center")
+            row += 1
+
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        _cell(ws, row, 1, "TOTAL (TL)", bold=True, bg="FFEBEE", align="right")
+        _cell(ws, row, 9, total_deductions_tl,
+              align="right", fmt='"₺"#,##0.00', bold=True, bg="FFEBEE", fg=bg_color)
         row += 1
 
-    # TL subtotal
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
-    _cell(ws, row, 1, "TOTAL (TL)", bold=True, bg="FFEBEE", align="right")
-    _cell(ws, row, 9, total_deductions_tl,
-          align="right", fmt='"₺"#,##0.00', bold=True, bg="FFEBEE", fg=bg_color)
-    row += 1
-
-    # USD equivalent
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
-    _cell(ws, row, 1,
-          f"TOTAL (USD)  [÷ {usd_tl_rate:,.4f} TL/USD]",
-          bold=True, bg="FFCDD2", align="right")
-    _cell(ws, row, 9, total_deductions_usd,
-          align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=bg_color)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        _cell(ws, row, 1,
+              f"TOTAL (USD)  [÷ {usd_tl_rate:,.4f} TL/USD]",
+              bold=True, bg="FFCDD2", align="right")
+        _cell(ws, row, 9, total_deductions_usd,
+              align="right", fmt='"$"#,##0.00', bold=True, bg="FFCDD2", fg=bg_color)
 
 
 # ── Summary sheet (multi-contractor) ──────────────────────────────────────────

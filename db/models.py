@@ -182,19 +182,29 @@ def get_ppe_charges(contractor_id: int, month: int, year: int):
 
 
 def upsert_ppe_charge(charge_id: int | None, contractor_id: int, month: int, year: int,
-                      item_name: str, quantity: float, unit_price: float) -> int:
+                      item_name: str, quantity: float, unit_price: float,
+                      material_code: str = "", unit_of_measure: str = "",
+                      entry_date: str = "") -> int:
     with get_connection() as conn:
         if charge_id:
             conn.execute(
-                "UPDATE ppe_charges SET item_name=?, quantity=?, unit_price=? WHERE id=?",
-                (item_name, quantity, unit_price, charge_id)
+                """UPDATE ppe_charges
+                   SET item_name=?, quantity=?, unit_price=?,
+                       material_code=?, unit_of_measure=?, entry_date=?
+                   WHERE id=?""",
+                (item_name, quantity, unit_price,
+                 material_code, unit_of_measure, entry_date, charge_id)
             )
             conn.commit()
             return charge_id
         else:
             cur = conn.execute(
-                "INSERT INTO ppe_charges (contractor_id, month, year, item_name, quantity, unit_price) VALUES (?,?,?,?,?,?)",
-                (contractor_id, month, year, item_name, quantity, unit_price)
+                """INSERT INTO ppe_charges
+                   (contractor_id, month, year, item_name, quantity, unit_price,
+                    material_code, unit_of_measure, entry_date)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (contractor_id, month, year, item_name, quantity, unit_price,
+                 material_code, unit_of_measure, entry_date)
             )
             conn.commit()
             return cur.lastrowid
