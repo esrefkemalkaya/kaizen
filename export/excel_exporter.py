@@ -164,10 +164,10 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
 
         _cell(ws, row, 1, idx, align="center")
         _cell(ws, row, 2, e["hole_id"])
-        _cell(ws, row, 3, e.get("start_date", ""), align="center")
-        _cell(ws, row, 4, e.get("end_date",   ""), align="center")
-        _cell(ws, row, 5, e.get("start_depth", 0.0), align="right", fmt="#,##0.00")
-        _cell(ws, row, 6, e.get("end_depth",   0.0), align="right", fmt="#,##0.00")
+        _cell(ws, row, 3, e["start_date"],  align="center")
+        _cell(ws, row, 4, e["end_date"],    align="center")
+        _cell(ws, row, 5, e["start_depth"], align="right", fmt="#,##0.00")
+        _cell(ws, row, 6, e["end_depth"],   align="right", fmt="#,##0.00")
         _cell(ws, row, 7, meters, align="right", fmt="#,##0.00")
         _cell(ws, row, 8, rate_m, align="right", fmt='"$"#,##0.00')
         _cell(ws, row, 9, amount, align="right", fmt='"$"#,##0.00', bold=True)
@@ -200,11 +200,11 @@ def _build_sheet(wb, project, contractor, month, year, usd_tl_rate, summary_data
         total_standby  += amount
 
         _cell(ws, row, 1, idx, align="center")
-        _cell(ws, row, 2, e.get("entry_date",   ""), align="center")
-        _cell(ws, row, 3, e.get("hole_id",      ""))
-        _cell(ws, row, 4, e.get("start_time",   ""), align="center")
-        _cell(ws, row, 5, e.get("end_time",     ""), align="center")
-        detail = e.get("standby_type", "")
+        _cell(ws, row, 2, e["entry_date"],  align="center")
+        _cell(ws, row, 3, e["hole_id"])
+        _cell(ws, row, 4, e["start_time"], align="center")
+        _cell(ws, row, 5, e["end_time"],   align="center")
+        detail = e["standby_type"]
         if e["description"]:
             detail = f"{detail} — {e['description']}" if detail else e["description"]
         _cell(ws, row, 6, detail)
