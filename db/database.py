@@ -44,7 +44,8 @@ def init_db():
             start_date     TEXT NOT NULL DEFAULT '',
             end_date       TEXT NOT NULL DEFAULT '',
             start_depth    REAL NOT NULL DEFAULT 0,
-            end_depth      REAL NOT NULL DEFAULT 0
+            end_depth      REAL NOT NULL DEFAULT 0,
+            rig_name       TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS ppe_charges (
@@ -89,6 +90,22 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS period_settings (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            contractor_id   INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+            month           INTEGER NOT NULL,
+            year            INTEGER NOT NULL,
+            donem_adi       TEXT    NOT NULL DEFAULT '',
+            exchange_rate   REAL    NOT NULL DEFAULT 0,
+            kuyuda_kalan    REAL    NOT NULL DEFAULT 0,
+            target_geo1     REAL    NOT NULL DEFAULT 700,
+            target_geo2     REAL    NOT NULL DEFAULT 700,
+            target_geo3     REAL    NOT NULL DEFAULT 700,
+            target_geo5     REAL    NOT NULL DEFAULT 700,
+            standby_rate    REAL    NOT NULL DEFAULT 75,
+            UNIQUE(contractor_id, month, year)
+        );
     """)
 
     conn.commit()
@@ -107,6 +124,7 @@ def _migrate_db(conn):
         ("end_date",    "TEXT NOT NULL DEFAULT ''"),
         ("start_depth", "REAL NOT NULL DEFAULT 0"),
         ("end_depth",   "REAL NOT NULL DEFAULT 0"),
+        ("rig_name",    "TEXT NOT NULL DEFAULT ''"),
     ]:
         if col not in existing:
             c.execute(f"ALTER TABLE drilling_entries ADD COLUMN {col} {defn}")

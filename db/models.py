@@ -77,13 +77,15 @@ def get_drilling_entries(contractor_id: int, month: int, year: int):
 
 def upsert_drilling_entry(entry_id: int | None, contractor_id: int, month: int, year: int,
                           hole_id: str, start_date: str, end_date: str,
-                          start_depth: float, end_depth: float, meters: float) -> int:
+                          start_depth: float, end_depth: float, meters: float,
+                          rig_name: str = "") -> int:
     with get_connection() as conn:
         if entry_id:
             conn.execute(
                 "UPDATE drilling_entries SET hole_id=?, start_date=?, end_date=?, "
-                "start_depth=?, end_depth=?, meters_drilled=? WHERE id=?",
-                (hole_id, start_date, end_date, start_depth, end_depth, meters, entry_id)
+                "start_depth=?, end_depth=?, meters_drilled=?, rig_name=? WHERE id=?",
+                (hole_id, start_date, end_date, start_depth, end_depth, meters,
+                 rig_name, entry_id)
             )
             conn.commit()
             return entry_id
@@ -91,10 +93,10 @@ def upsert_drilling_entry(entry_id: int | None, contractor_id: int, month: int, 
             cur = conn.execute(
                 "INSERT INTO drilling_entries "
                 "(contractor_id, month, year, hole_id, meters_drilled, standby_hours, "
-                "start_date, end_date, start_depth, end_depth) "
-                "VALUES (?,?,?,?,?,0,?,?,?,?)",
+                "start_date, end_date, start_depth, end_depth, rig_name) "
+                "VALUES (?,?,?,?,?,0,?,?,?,?,?)",
                 (contractor_id, month, year, hole_id, meters,
-                 start_date, end_date, start_depth, end_depth)
+                 start_date, end_date, start_depth, end_depth, rig_name)
             )
             conn.commit()
             return cur.lastrowid
@@ -312,3 +314,82 @@ def set_setting(key: str, value: str):
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value)
         )
         conn.commit()
+
+
+# ── Period Settings ────────────────────────────────────────────────────────────
+
+_PS_DEFAULTS = {
+    "donem_adi":    "",
+    "exchange_rate": 0.0,
+    "kuyuda_kalan":  0.0,
+    "target_geo1":   700.0,
+    "target_geo2":   700.0,
+    "target_geo3":   700.0,
+    "target_geo5":   700.0,
+    "standby_rate":   75.0,
+}
+
+
+def get_period_settings(contractor_id: int, month: int, year: int) -> dict:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM period_settings WHERE contractor_id=? AND month=? AND year=?",
+            (contractor_id, month, year)
+        ).fetchone()
+    if row:
+        return dict(row)
+    return {"contractor_id": contractor_id, "month": month, "year": year,
+            **_PS_DEFAULTS}
+
+
+def upsert_period_settings(contractor_id: int, month: int, year: int,
+                           donem_adi: str, exchange_rate: float,
+                           kuyuda_kalan: float,
+                           target_geo1: float, target_geo2: float,
+                           target_geo3: float, target_geo5: float,
+                           standby_rate: float):
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO period_settings
+               (contractor_id, month, year, donem_adi, exchange_rate, kuyuda_kalan,
+                target_geo1, target_geo2, target_geo3, target_geo5, standby_rate)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(contractor_id, month, year) DO UPDATE SET
+                 donem_adi=excluded.donem_adi,
+                 exchange_rate=excluded.exchange_rate,
+                 kuyuda_kalan=excluded.kuyuda_kalan,
+                 target_geo1=excluded.target_geo1,
+                 target_geo2=excluded.target_geo2,
+                 target_geo3=excluded.target_geo3,
+                 target_geo5=excluded.target_geo5,
+                 standby_rate=excluded.standby_rate
+            """,
+            (contractor_id, month, year, donem_adi, exchange_rate, kuyuda_kalan,
+             target_geo1, target_geo2, target_geo3, target_geo5, standby_rate)
+        )
+        conn.commit()
+
+
+def get_standby_net_hours_per_rig(contractor_id: int, month: int, year: int) -> dict[str, float]:
+    """
+    Returns net payable standby hours per rig for the given period,
+    applying the 24-hour Patlatma deduction rule.
+    Returns a dict: {rig_name: net_hours}
+    """
+    from collections import defaultdict
+    MACHINES = ["GEO 900E-1", "GEO 900E-2", "GEO 900E-3", "GEO 900E-5"]
+    entries = get_standby_entries(contractor_id, month, year)
+    rigs = defaultdict(lambda: {"blasting": 0.0, "other": 0.0})
+    for e in entries:
+        rig = (e["rig_name"] or "").strip() or "Unknown"
+        hours = float(e["hours"] or 0)
+        if (e["standby_type"] or "").strip().lower() == "patlatma":
+            rigs[rig]["blasting"] += hours
+        else:
+            rigs[rig]["other"] += hours
+    result = {}
+    for rig in MACHINES:
+        d = rigs[rig]
+        payable = d["other"] + max(0.0, d["blasting"] - 24.0)
+        result[rig] = round(payable, 4)
+    return result
