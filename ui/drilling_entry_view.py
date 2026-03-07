@@ -68,6 +68,24 @@ def _match_sb_col(header: str) -> int:
     return -1  # unknown
 
 
+MACHINES = ["GEO 900E-1", "GEO 900E-2", "GEO 900E-3", "GEO 900E-5"]
+
+# Borehole table column indices
+BH_COL_RIG         = 0   # Makine No
+BH_COL_HOLE        = 1   # Hole ID
+BH_COL_START_DATE  = 2   # Start Date
+BH_COL_END_DATE    = 3   # End Date
+BH_COL_START_DEPTH = 4   # Metre Başlangıç
+BH_COL_END_DEPTH   = 5   # Metre Bitiş
+BH_COL_METERS      = 6   # İlerleme (m)
+BH_COL_AMOUNT      = 7   # Amount
+
+BH_HEADERS = [
+    "Makine No", "Hole ID", "Start Date", "End Date",
+    "M. Başlangıç", "M. Bitiş", "İlerleme (m)", "Amount"
+]
+
+
 def _calc_hours(start: str, end: str) -> float:
     for fmt in ["%H:%M", "%H.%M", "%H:%M:%S"]:
         try:
@@ -80,6 +98,30 @@ def _calc_hours(start: str, end: str) -> float:
         except ValueError:
             continue
     return 0.0
+
+
+class ComboDelegate(QStyledItemDelegate):
+    """Dropdown delegate for a fixed list of choices."""
+    def __init__(self, choices: list[str], parent=None):
+        super().__init__(parent)
+        self._choices = choices
+
+    def createEditor(self, parent, option, index):
+        combo = QComboBox(parent)
+        combo.addItems(self._choices)
+        return combo
+
+    def setEditorData(self, editor, index):
+        val = index.data() or ""
+        idx = editor.findText(val)
+        if idx >= 0:
+            editor.setCurrentIndex(idx)
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+
+    def updateEditorGeometry(self, editor, option, index):
+        editor.setGeometry(option.rect)
 
 
 class AutoCompleteDelegate(QStyledItemDelegate):
@@ -112,6 +154,7 @@ class DrillingEntryView(QWidget):
         self._project_name = ""
         self._contractor_id = None
         self._borehole_ids: list[int | None] = []
+        self._rig_delegate = ComboDelegate(MACHINES)
         self._standby_ids: list[int | None] = []
         self._hole_delegate = AutoCompleteDelegate()
         self._sb_hole_delegate = AutoCompleteDelegate()
@@ -197,20 +240,23 @@ class DrillingEntryView(QWidget):
         bh_action.addStretch()
         bh_layout.addLayout(bh_action)
 
-        # Cols: Hole ID | Start Date | End Date | Start Depth | End Depth | Meters | Amount
+        # 8 cols: Makine No | Hole ID | Start Date | End Date | M.Başlangıç | M.Bitiş | İlerleme | Amount
         self.bh_table = QTableWidget()
         self.bh_table.setStyleSheet(TABLE_STYLE)
-        self.bh_table.setColumnCount(7)
-        self.bh_table.setHorizontalHeaderLabels([
-            "Hole ID", "Start Date", "End Date",
-            "Start Depth (m)", "End Depth (m)", "Meters", "Amount"
-        ])
-        self.bh_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col, w in [(1, 100), (2, 100), (3, 110), (4, 110), (5, 90), (6, 120)]:
-            self.bh_table.setColumnWidth(col, w)
+        self.bh_table.setColumnCount(8)
+        self.bh_table.setHorizontalHeaderLabels(BH_HEADERS)
+        self.bh_table.setColumnWidth(BH_COL_RIG,         120)
+        self.bh_table.horizontalHeader().setSectionResizeMode(BH_COL_HOLE, QHeaderView.ResizeMode.Stretch)
+        self.bh_table.setColumnWidth(BH_COL_START_DATE,   95)
+        self.bh_table.setColumnWidth(BH_COL_END_DATE,     95)
+        self.bh_table.setColumnWidth(BH_COL_START_DEPTH, 100)
+        self.bh_table.setColumnWidth(BH_COL_END_DEPTH,   100)
+        self.bh_table.setColumnWidth(BH_COL_METERS,       85)
+        self.bh_table.setColumnWidth(BH_COL_AMOUNT,      110)
         self.bh_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.bh_table.verticalHeader().setVisible(False)
-        self.bh_table.setItemDelegateForColumn(0, self._hole_delegate)
+        self.bh_table.setItemDelegateForColumn(BH_COL_RIG,  self._rig_delegate)
+        self.bh_table.setItemDelegateForColumn(BH_COL_HOLE, self._hole_delegate)
         self.bh_table.itemChanged.connect(self._bh_on_item_changed)
         bh_layout.addWidget(self.bh_table)
 
@@ -363,7 +409,7 @@ class DrillingEntryView(QWidget):
         self.bh_table.setRowCount(0)
         for e in entries:
             self._bh_append_row(
-                e["id"], e["hole_id"],
+                e["id"], e["rig_name"], e["hole_id"],
                 e["start_date"], e["end_date"],
                 e["start_depth"], e["end_depth"],
                 e["meters_drilled"], rate_m
@@ -371,23 +417,24 @@ class DrillingEntryView(QWidget):
         self.bh_table.blockSignals(False)
         self._bh_update_totals()
 
-    def _bh_append_row(self, db_id, hole_id, start_date, end_date,
+    def _bh_append_row(self, db_id, rig_name, hole_id, start_date, end_date,
                        start_depth, end_depth, meters, rate_m):
         row = self.bh_table.rowCount()
         self.bh_table.insertRow(row)
         self._borehole_ids.append(db_id)
 
-        self.bh_table.setItem(row, 0, QTableWidgetItem(str(hole_id)))
-        self.bh_table.setItem(row, 1, QTableWidgetItem(str(start_date)))
-        self.bh_table.setItem(row, 2, QTableWidgetItem(str(end_date)))
-        self.bh_table.setItem(row, 3, QTableWidgetItem(f"{start_depth:.2f}"))
-        self.bh_table.setItem(row, 4, QTableWidgetItem(f"{end_depth:.2f}"))
-        self.bh_table.setItem(row, 5, QTableWidgetItem(f"{meters:.2f}"))
+        self.bh_table.setItem(row, BH_COL_RIG,         QTableWidgetItem(str(rig_name or "")))
+        self.bh_table.setItem(row, BH_COL_HOLE,        QTableWidgetItem(str(hole_id or "")))
+        self.bh_table.setItem(row, BH_COL_START_DATE,  QTableWidgetItem(str(start_date or "")))
+        self.bh_table.setItem(row, BH_COL_END_DATE,    QTableWidgetItem(str(end_date or "")))
+        self.bh_table.setItem(row, BH_COL_START_DEPTH, QTableWidgetItem(f"{start_depth:.2f}"))
+        self.bh_table.setItem(row, BH_COL_END_DEPTH,   QTableWidgetItem(f"{end_depth:.2f}"))
+        self.bh_table.setItem(row, BH_COL_METERS,      QTableWidgetItem(f"{meters:.2f}"))
 
         amt_item = QTableWidgetItem(f"${meters * rate_m:,.2f}")
         amt_item.setFlags(amt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt_item.setForeground(QColor("#1b5e20"))
-        self.bh_table.setItem(row, 6, amt_item)
+        self.bh_table.setItem(row, BH_COL_AMOUNT, amt_item)
 
     def _bh_add_row(self):
         if not self._contractor_id:
@@ -395,7 +442,7 @@ class DrillingEntryView(QWidget):
             return
         rate_m, _ = self._get_rate()
         self.bh_table.blockSignals(True)
-        self._bh_append_row(None, "", "", "", 0, 0, 0, rate_m)
+        self._bh_append_row(None, MACHINES[0], "", "", "", 0, 0, 0, rate_m)
         self.bh_table.blockSignals(False)
 
     def _bh_delete_row(self):
@@ -415,6 +462,10 @@ class DrillingEntryView(QWidget):
         self._borehole_ids.pop(row)
         self._bh_update_totals()
 
+    def _bh_cell(self, row, col) -> str:
+        it = self.bh_table.item(row, col)
+        return it.text().strip() if it else ""
+
     def _bh_save(self):
         cid = self.contractor_combo.currentData()
         month = self.month_combo.currentData()
@@ -424,23 +475,25 @@ class DrillingEntryView(QWidget):
             return
         errors = []
         for row in range(self.bh_table.rowCount()):
-            hole_id = (self.bh_table.item(row, 0) or QTableWidgetItem("")).text().strip()
+            rig_name   = self._bh_cell(row, BH_COL_RIG)
+            hole_id    = self._bh_cell(row, BH_COL_HOLE)
             if not hole_id:
                 errors.append(f"Row {row + 1}: Hole ID is empty.")
                 continue
-            start_date = (self.bh_table.item(row, 1) or QTableWidgetItem("")).text().strip()
-            end_date   = (self.bh_table.item(row, 2) or QTableWidgetItem("")).text().strip()
+            start_date = self._bh_cell(row, BH_COL_START_DATE)
+            end_date   = self._bh_cell(row, BH_COL_END_DATE)
             try:
-                start_depth = float((self.bh_table.item(row, 3) or QTableWidgetItem("0")).text())
-                end_depth   = float((self.bh_table.item(row, 4) or QTableWidgetItem("0")).text())
-                meters      = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
+                start_depth = float(self._bh_cell(row, BH_COL_START_DEPTH) or "0")
+                end_depth   = float(self._bh_cell(row, BH_COL_END_DEPTH)   or "0")
+                meters      = float(self._bh_cell(row, BH_COL_METERS)      or "0")
             except ValueError:
                 errors.append(f"Row {row + 1}: Invalid numeric value.")
                 continue
             db_id = self._borehole_ids[row]
             new_id = m.upsert_drilling_entry(
                 db_id, cid, month, year,
-                hole_id, start_date, end_date, start_depth, end_depth, meters
+                hole_id, start_date, end_date, start_depth, end_depth, meters,
+                rig_name=rig_name,
             )
             self._borehole_ids[row] = new_id
         if errors:
@@ -452,23 +505,23 @@ class DrillingEntryView(QWidget):
     def _bh_on_item_changed(self, item):
         row = item.row()
         col = item.column()
-        if col in (3, 4):
+        if col in (BH_COL_START_DEPTH, BH_COL_END_DEPTH):
             # depth changed → auto-calc meters
             try:
-                s = float((self.bh_table.item(row, 3) or QTableWidgetItem("0")).text())
-                e = float((self.bh_table.item(row, 4) or QTableWidgetItem("0")).text())
+                s = float(self._bh_cell(row, BH_COL_START_DEPTH) or "0")
+                e = float(self._bh_cell(row, BH_COL_END_DEPTH)   or "0")
                 meters = max(0.0, e - s)
             except ValueError:
                 return
             self.bh_table.blockSignals(True)
-            self.bh_table.setItem(row, 5, QTableWidgetItem(f"{meters:.2f}"))
+            self.bh_table.setItem(row, BH_COL_METERS, QTableWidgetItem(f"{meters:.2f}"))
             self._bh_set_amount(row, meters)
             self.bh_table.blockSignals(False)
             self._bh_update_totals()
-        elif col == 5:
+        elif col == BH_COL_METERS:
             # meters manually edited → update amount
             try:
-                meters = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
+                meters = float(self._bh_cell(row, BH_COL_METERS) or "0")
             except ValueError:
                 return
             self.bh_table.blockSignals(True)
@@ -481,14 +534,14 @@ class DrillingEntryView(QWidget):
         amt = QTableWidgetItem(f"${meters * rate_m:,.2f}")
         amt.setFlags(amt.flags() & ~Qt.ItemFlag.ItemIsEditable)
         amt.setForeground(QColor("#1b5e20"))
-        self.bh_table.setItem(row, 6, amt)
+        self.bh_table.setItem(row, BH_COL_AMOUNT, amt)
 
     def _bh_update_totals(self):
         rate_m, _ = self._get_rate()
         total_m = total_amt = 0.0
         for row in range(self.bh_table.rowCount()):
             try:
-                meters = float((self.bh_table.item(row, 5) or QTableWidgetItem("0")).text())
+                meters = float(self._bh_cell(row, BH_COL_METERS) or "0")
             except ValueError:
                 continue
             total_m += meters
@@ -497,49 +550,74 @@ class DrillingEntryView(QWidget):
         self.bh_amount_lbl.setText(f"Total: ${total_amt:,.2f}")
 
     def _import_excel(self):
+        """Import boreholes from Excel (Giriş sheet format or simple Hole/Meter columns)."""
         if not self._contractor_id:
             QMessageBox.information(self, "Select", "Select a contractor first.")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Excel File", "", "Excel Files (*.xlsx *.xls)"
+            self, "Import Excel File", "", "Excel Files (*.xlsx *.xls *.xlsm)"
         )
         if not path:
             return
         try:
             import openpyxl
             wb = openpyxl.load_workbook(path, data_only=True)
-            ws = wb.active
-            header_row = col_hole = col_meters = None
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value and isinstance(cell.value, str):
-                        val = cell.value.strip().lower()
-                        if "hole" in val or "kuyu" in val:
-                            col_hole = cell.column
-                            header_row = cell.row
-                        elif "meter" in val or "metre" in val:
-                            col_meters = cell.column
-                if header_row:
-                    break
-            if not header_row or not col_hole or not col_meters:
-                QMessageBox.warning(self, "Import Error",
-                    "Could not find required columns (Hole/Kuyu and Meter/Metre).")
-                return
+            # Try "Giriş" sheet first, then active
+            ws = wb["Giriş"] if "Giriş" in wb.sheetnames else wb.active
             rate_m, _ = self._get_rate()
             imported = 0
             self.bh_table.blockSignals(True)
-            for row in ws.iter_rows(min_row=header_row + 1):
-                hole_id = row[col_hole - 1].value
-                meters_val = row[col_meters - 1].value
-                if hole_id is None and meters_val is None:
-                    continue
-                hole_id = str(hole_id).strip() if hole_id is not None else ""
-                try:
-                    meters = float(meters_val) if meters_val is not None else 0.0
-                except (ValueError, TypeError):
-                    continue
-                self._bh_append_row(None, hole_id, "", "", 0, 0, meters, rate_m)
-                imported += 1
+            # Detect if this is the Giriş format by checking A4 header
+            a4 = str(ws["A4"].value or "").strip().lower()
+            if "makine" in a4 or "machine" in a4:
+                # Giriş format: rows 5..24, A=Rig, B=Hole, C=Start, D=End, E=M.Start, F=M.End
+                for r in range(5, 25):
+                    rig   = str(ws.cell(r, 1).value or "").strip()
+                    hole  = str(ws.cell(r, 2).value or "").strip()
+                    if not rig and not hole:
+                        continue
+                    sd = str(ws.cell(r, 3).value or "").strip()
+                    ed = str(ws.cell(r, 4).value or "").strip()
+                    try:
+                        ms = float(ws.cell(r, 5).value or 0)
+                        me = float(ws.cell(r, 6).value or 0)
+                    except (ValueError, TypeError):
+                        ms = me = 0.0
+                    meters = max(0.0, me - ms)
+                    self._bh_append_row(None, rig, hole, sd, ed, ms, me, meters, rate_m)
+                    imported += 1
+            else:
+                # Generic: find Hole and Meter columns
+                hdr_row = col_hole = col_rig = col_meters = None
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if cell.value and isinstance(cell.value, str):
+                            val = cell.value.strip().lower()
+                            if "hole" in val or "kuyu" in val:
+                                col_hole = cell.column; hdr_row = cell.row
+                            elif "makine" in val or "rig" in val:
+                                col_rig = cell.column
+                            elif "meter" in val or "metre" in val or "ilerleme" in val:
+                                col_meters = cell.column
+                    if hdr_row:
+                        break
+                if not hdr_row or not col_hole:
+                    QMessageBox.warning(self, "Import Error",
+                        "Could not find required columns (Hole/Kuyu).")
+                    self.bh_table.blockSignals(False)
+                    return
+                for row in ws.iter_rows(min_row=hdr_row + 1):
+                    hole_val = row[col_hole - 1].value
+                    if hole_val is None:
+                        continue
+                    rig_val = str(row[col_rig - 1].value or "").strip() if col_rig else ""
+                    meters_val = row[col_meters - 1].value if col_meters else None
+                    try:
+                        meters = float(meters_val) if meters_val is not None else 0.0
+                    except (ValueError, TypeError):
+                        continue
+                    self._bh_append_row(None, rig_val, str(hole_val).strip(), "", "", 0, 0, meters, rate_m)
+                    imported += 1
             self.bh_table.blockSignals(False)
             self._bh_update_totals()
             QMessageBox.information(self, "Import Complete",
